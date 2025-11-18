@@ -38,6 +38,25 @@ python sudoku_visualizer.py
 
 GUI를 사용하면 스도쿠 해결 과정을 시각적으로 확인할 수 있으며, 각 단계에서 어떤 기법이 사용되었는지 확인할 수 있습니다.
 
+## 실행 예시
+
+아래 이미지는 GUI에서 동일한 퍼즐을 입력했을 때의 흐름을 보여줍니다.
+
+### 1. 문제 입력 화면
+<p align="center">
+  <img src="images/01.png" width="520" alt="문제 입력 화면">
+</p>
+
+### 2. 입력 후 첫 상태
+<p align="center">
+  <img src="images/02.png" width="520" alt="입력 후 첫 상태">
+</p>
+
+### 3. 해결 완료
+<p align="center">
+  <img src="images/03.png" width="520" alt="해결 완료">
+</p>
+
 ## 프로젝트 구조
 
 ```

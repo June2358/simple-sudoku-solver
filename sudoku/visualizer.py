@@ -14,8 +14,21 @@ from sudoku.gui_constants import (
     ACCENT_YELLOW, ACCENT_YELLOW_LIGHT, CANDIDATE_GRAY, get_fonts,
     VisualizerConstants, InputDialogConstants
 )
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, Dict, Any, Set
 from copy import deepcopy
+
+EVENT_COLOR_MAP = {
+    "LOGIC": ACCENT,
+    "CANDIDATE_REMOVAL": ACCENT_YELLOW,
+    "BACKTRACK_PREP": DARK_BLUE,
+    "GUESS_START": ORANGE,
+    "GUESS_SUCCESS": GREEN,
+    "GUESS_FAIL": RED,
+    "BACKTRACK_FAIL": RED,
+    "CONTRADICTION": RED,
+    "SOLVED": PRIMARY,
+    "INITIAL_STATE": ACCENT_LIGHT,
+}
 
 
 # ============================================================================
@@ -140,7 +153,9 @@ class SudokuVisualizer:
         self.last_filled_cell: Optional[Tuple[int, int]] = None
         self.current_step_text = ""
         self.current_technique_name = ""
-        self.current_logic_name = ""
+        self.current_event_type = ""
+        self.current_event: Dict[str, Any] = {}
+        self.current_depth = 0
         self.step_count = 0
         self.animation_cells: List[Tuple[int, int, float]] = []
         self.animation_time = 0.0
@@ -153,6 +168,7 @@ class SudokuVisualizer:
         self.autoplay_direction = 1
         self.autoplay_interval = VisualizerConstants.AUTOPLAY_INTERVAL
         self.autoplay_timer = 0.0
+        self.assumption_cells: Set[Tuple[int, int]] = set()
     
     def draw_grid(self):
         """스도쿠 그리드 그리기"""
@@ -221,6 +237,10 @@ class SudokuVisualizer:
     
     def _get_number_color(self, row: int, col: int) -> Tuple[int, int, int]:
         """숫자 색상 결정"""
+        if self.assumption_cells:
+            original_val = self.original_board.board[row][col]
+            if original_val == 0:
+                return ORANGE
         original_val = self.original_board.board[row][col]
         return BLACK if original_val != 0 else ACCENT
     
@@ -271,17 +291,19 @@ class SudokuVisualizer:
     
     def _draw_strategy_highlights(self):
         """전략 관련 셀 하이라이트"""
+        border_color, fill_color = self._get_highlight_colors()
         for row, col in self.strategy_related_cells:
             if (row, col) not in self.conflicting_cells:
                 x = self.margin + col * self.cell_size
                 y = self.margin + row * self.cell_size
                 strategy_surface = pygame.Surface((self.cell_size - 2, self.cell_size - 2))
                 strategy_surface.set_alpha(100)
-                strategy_surface.fill(ACCENT_YELLOW_LIGHT)
+                strategy_surface.fill(fill_color)
                 self.screen.blit(strategy_surface, (x + 1, y + 1))
     
     def _draw_filled_cell_highlights(self):
         """채워진 셀 하이라이트"""
+        border_color, fill_color = self._get_highlight_colors()
         cells_to_highlight = self.highlighted_cells if self.highlighted_cells else (
             [self.last_filled_cell] if self.last_filled_cell else []
         )
@@ -291,7 +313,7 @@ class SudokuVisualizer:
                 x = self.margin + col * self.cell_size
                 y = self.margin + row * self.cell_size
                 highlight_rect = pygame.Rect(x + 2, y + 2, self.cell_size - 4, self.cell_size - 4)
-                pygame.draw.rect(self.screen, ACCENT, highlight_rect, 3)
+                pygame.draw.rect(self.screen, border_color, highlight_rect, 3)
     
     def draw_side_panel(self, total_steps: int = 0):
         """사이드 패널 그리기"""
@@ -344,6 +366,15 @@ class SudokuVisualizer:
             self.screen.blit(strategy_rendered, (panel_x, y))
             y += self.step_font.get_linesize()
         
+        if self.current_event_type:
+            event_label = self._humanize_event_type(self.current_event_type)
+            event_text = event_label
+            if self.current_depth:
+                event_text += f" (Depth {self.current_depth})"
+            event_rendered = self.medium_font.render(event_text, True, GRAY)
+            self.screen.blit(event_rendered, (panel_x, y))
+            y += self.medium_font.get_linesize()
+        
         location_text = self.current_step_text or "위치 정보 없음"
         max_width = self.side_panel_width - 20
         lines = self._wrap_text(location_text, self.medium_font, max_width)
@@ -378,6 +409,12 @@ class SudokuVisualizer:
             ok_text = body_font.render("모순 없음", True, GRAY)
             self.screen.blit(ok_text, (panel_x, y))
             y += body_font.get_linesize()
+        
+        depth_text = f"백트래킹 깊이: {self.current_depth}"
+        depth_color = ORANGE if self.current_depth > 0 else GRAY
+        depth_rendered = body_font.render(depth_text, True, depth_color)
+        self.screen.blit(depth_rendered, (panel_x, y))
+        y += body_font.get_linesize()
         
         autoplay_text = f"자동재생: {'ON' if self.autoplay_enabled else 'OFF'}"
         autoplay_color = PRIMARY_DARK if self.autoplay_enabled else GRAY
@@ -435,6 +472,31 @@ class SudokuVisualizer:
         
         lines.append(current_line)
         return lines
+    
+    @staticmethod
+    def _humanize_event_type(event_type: str) -> str:
+        mapping = {
+            "LOGIC": "논리 기법",
+            "CANDIDATE_REMOVAL": "후보 제거",
+            "BACKTRACK_PREP": "백트래킹 준비",
+            "GUESS_START": "백트래킹 추측",
+            "GUESS_SUCCESS": "백트래킹 확정",
+            "GUESS_FAIL": "백트래킹 철회",
+            "BACKTRACK_FAIL": "백트래킹 실패",
+            "CONTRADICTION": "모순 발견",
+            "SOLVED": "해결 완료",
+            "INITIAL_STATE": "초기 상태"
+        }
+        return mapping.get(event_type, event_type)
+    
+    def _get_highlight_colors(self) -> Tuple[Tuple[int, int, int], Tuple[int, int, int]]:
+        """현재 이벤트 타입에 따른 강조 색상 반환 (선, 배경)"""
+        if self.assumption_cells and self.current_event_type not in {"CONTRADICTION", "BACKTRACK_FAIL"}:
+            base_color = ORANGE
+        else:
+            base_color = EVENT_COLOR_MAP.get(self.current_event_type, ACCENT)
+        fill_color = tuple(min(255, int((base_color[i] + WHITE[i]) / 2)) for i in range(3))
+        return base_color, fill_color
     
     def handle_events(self):
         """이벤트 처리"""
@@ -499,23 +561,38 @@ class SudokuVisualizer:
         if self.autoplay_enabled:
             self.autoplay_enabled = False
             self.autoplay_timer = 0.0
-    def save_step(self, step_text: str, filled_cell: Optional[Tuple[int, int]] = None,
-                  highlighted: List[Tuple[int, int]] = None, technique_name: str = "",
-                  logic_name: Optional[str] = None):
-        """현재 단계 상태 저장"""
+    def save_step(self, event: Dict[str, Any]):
+        """현재 이벤트 상태 저장"""
+        board_state = event.get('board_state')
+        candidates_state = event.get('candidates_state')
+        if board_state is None or candidates_state is None:
+            return
+        
+        board_snapshot = [row[:] for row in board_state]
+        candidates_snapshot = [
+            [cand.copy() for cand in row]
+            for row in candidates_state
+        ]
+        
         step_data = {
-            'text': step_text,
-            'filled_cell': filled_cell,
-            'highlighted': highlighted or [],
-            'technique_name': technique_name,
-            'logic_name': logic_name or technique_name,
-            'board_state': [[self.board.board[i][j] for j in range(SudokuBoard.SIZE)] 
-                           for i in range(SudokuBoard.SIZE)],
-            'candidates_state': [[self.board.candidates[i][j].copy() 
-                               for j in range(SudokuBoard.SIZE)] 
-                               for i in range(SudokuBoard.SIZE)]
+            'event': event,
+            'board_state': board_snapshot,
+            'candidates_state': candidates_snapshot
         }
         self.step_history.append(step_data)
+    
+    def _apply_event_state(self, event: Dict[str, Any]):
+        """이벤트에 포함된 보드/후보 상태를 현재 보드에 반영"""
+        board_state = event.get('board_state')
+        candidates_state = event.get('candidates_state')
+        if board_state:
+            for i in range(SudokuBoard.SIZE):
+                for j in range(SudokuBoard.SIZE):
+                    self.board.board[i][j] = board_state[i][j]
+        if candidates_state:
+            for i in range(SudokuBoard.SIZE):
+                for j in range(SudokuBoard.SIZE):
+                    self.board.candidates[i][j] = candidates_state[i][j]
     
     def load_step(self, step_index: int):
         """저장된 단계 상태 불러오기"""
@@ -524,18 +601,40 @@ class SudokuVisualizer:
         
         self.current_step_index = step_index
         step_data = self.step_history[step_index]
-        self.current_step_text = step_data['text']
-        self.current_technique_name = step_data.get('technique_name', '')
-        self.current_logic_name = step_data.get('logic_name', self.current_technique_name)
-        self.last_filled_cell = step_data['filled_cell']
-        self.highlighted_cells = step_data['highlighted']
-        self.strategy_related_cells = []
+        event = step_data.get('event', {})
+        self.current_event = event
+        self.current_event_type = event.get('event_type', '')
+        self.current_depth = event.get('depth', 0)
+        self.current_technique_name = event.get('technique_name') or self._humanize_event_type(self.current_event_type)
+        highlighted = event.get('highlighted') or []
+        filled_cell = event.get('filled_cell')
+        self.last_filled_cell = filled_cell
+        self.highlighted_cells = highlighted
+        if highlighted:
+            self.strategy_related_cells = highlighted
+        elif filled_cell:
+            self.strategy_related_cells = [filled_cell]
+        else:
+            self.strategy_related_cells = []
         
-        # 보드 상태 복원
+        assumptions = event.get('assumptions') or []
+        self.assumption_cells = {tuple(cell) for cell in assumptions}
+        
+        message = event.get('message')
+        if message:
+            self.current_step_text = message
+        else:
+            cells_for_text = highlighted or ([filled_cell] if filled_cell else [])
+            self.current_step_text = self._format_step_text(cells_for_text)
+        
+        board_state = step_data.get('board_state', [])
+        candidate_state = step_data.get('candidates_state', [])
         for i in range(SudokuBoard.SIZE):
             for j in range(SudokuBoard.SIZE):
-                self.board.board[i][j] = step_data['board_state'][i][j]
-                self.board.candidates[i][j] = step_data['candidates_state'][i][j]
+                if board_state:
+                    self.board.board[i][j] = board_state[i][j]
+                if candidate_state:
+                    self.board.candidates[i][j] = candidate_state[i][j]
     
     def _start_animation(self):
         """애니메이션 시작"""
@@ -588,25 +687,12 @@ class SudokuVisualizer:
         solver = SudokuSolver(self.board)
         self._show_loading_screen()
         
-        def on_step_callback(technique_name: str, filled_cell: Optional[Tuple[int, int]], 
-                            highlighted: List[Tuple[int, int]]):
-            if technique_name == "초기 상태":
+        def on_step_callback(event: Dict[str, Any]):
+            if not event:
                 return
-            
             self.step_count += 1
-            self.board = deepcopy(solver.board)
-            
-            filled_cells = highlighted if highlighted else ([filled_cell] if filled_cell else [])
-            is_final_move = solver.board.is_complete()
-            if is_final_move:
-                technique_display = f"{technique_name} (완성)" if technique_name else "완성"
-            else:
-                technique_display = technique_name
-            
-            step_text = self._format_step_text(filled_cells)
-            self.save_step(step_text, filled_cells[0] if filled_cells else None, 
-                          filled_cells, technique_display, logic_name=technique_name)
-            
+            self._apply_event_state(event)
+            self.save_step(event)
             if self.step_count % VisualizerConstants.LOADING_UPDATE_INTERVAL == 0:
                 self._update_loading_screen()
         
@@ -661,7 +747,21 @@ class SudokuVisualizer:
         solved = self.solve_with_visualization()
         
         if len(self.step_history) == 0:
-            self.save_step("초기 상태", None, [], "초기 상태", logic_name="초기 상태")
+            fallback_event = {
+                "event_type": "INITIAL_STATE",
+                "technique_name": "초기 상태",
+                "highlighted": [],
+                "filled_cell": None,
+                "message": "초기 상태",
+                "depth": 0,
+                "assumptions": [],
+                "board_state": [[self.board.board[i][j] for j in range(SudokuBoard.SIZE)] 
+                                for i in range(SudokuBoard.SIZE)],
+                "candidates_state": [[self.board.candidates[i][j].copy() 
+                                      for j in range(SudokuBoard.SIZE)]
+                                     for i in range(SudokuBoard.SIZE)]
+            }
+            self.save_step(fallback_event)
         
         if len(self.step_history) > 0:
             self.load_step(0)

@@ -215,34 +215,42 @@ def apply_naked_subsets(board: SudokuBoard, steps: List[str], N: int) -> bool:
 
 def apply_hidden_subsets(board: SudokuBoard, steps: List[str], N: int) -> bool:
     """
-    Hidden Subsets: N개의 숫자가 오직 N개의 셀에만 나타나는 경우
+    Hidden Subsets: N개의 숫자가 오직 N개의 셀에만 나타나는 경우 (역인덱싱 기반)
     """
     for unit in get_all_units(board):
-        digit_map = {}
+        # 숫자 -> 셀 리스트 매핑 (존재하는 숫자만 포함)
+        candidates_map = {}
         for r, c in unit:
             if board.board[r][c] == 0:
                 for digit in board.get_candidates(r, c):
-                    if digit not in digit_map:
-                        digit_map[digit] = []
-                    digit_map[digit].append((r, c))
+                    candidates_map.setdefault(digit, []).append((r, c))
         
-        for digit_combination in combinations(range(1, 10), N):
+        if len(candidates_map) < N:
+            continue
+        
+        existing_digits = list(candidates_map.keys())
+        
+        for digit_combination in combinations(existing_digits, N):
             union_cells = set()
             for digit in digit_combination:
-                if digit in digit_map:
-                    union_cells.update(digit_map[digit])
+                union_cells.update(candidates_map[digit])
             
-            if len(union_cells) == N:
-                digit_set = set(digit_combination)
-                for r, c in union_cells:
-                    old_candidates = board.candidates[r][c].copy()
-                    # 교집합만 남김 (기존 후보에서 digit_set에 없는 것만 제거, 새로운 후보 추가 안 함)
-                    new_candidates = old_candidates & digit_set
-                    if new_candidates != old_candidates:
-                        board.candidates[r][c] = new_candidates
-                        subset_name = {2: "Pairs", 3: "Triples", 4: "Quads"}.get(N, f"{N}-tuple")
-                        steps.append(f"Hidden {subset_name}: {sorted(digit_combination)} in {sorted(union_cells)}")
-                        return True
+            if len(union_cells) != N:
+                continue
+            
+            digit_set = set(digit_combination)
+            progress = False
+            for r, c in union_cells:
+                old_candidates = board.candidates[r][c].copy()
+                new_candidates = old_candidates & digit_set
+                if new_candidates != old_candidates:
+                    board.candidates[r][c] = new_candidates
+                    progress = True
+            
+            if progress:
+                subset_name = {2: "Pairs", 3: "Triples", 4: "Quads"}.get(N, f"{N}-tuple")
+                steps.append(f"Hidden {subset_name}: {sorted(digit_combination)} in {sorted(union_cells)}")
+                return True
     return False
 
 
