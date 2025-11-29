@@ -6,7 +6,7 @@
 
 import json
 import os
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 from .board import SudokuBoard
 
 # ============================================================================
@@ -62,7 +62,7 @@ def load_from_grid(grid: List[List[int]]) -> SudokuBoard:
 _PUZZLES_FILE = os.path.join(os.path.dirname(__file__), 'puzzles.json')
 
 # 캐시된 퍼즐 데이터
-_puzzles_cache: Dict[str, List[List[List[int]]]] = None
+_puzzles_cache: Optional[Dict[str, List[List[List[int]]]]] = None
 
 
 def _load_puzzles() -> Dict[str, List[List[List[int]]]]:

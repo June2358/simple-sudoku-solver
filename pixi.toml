@@ -1,0 +1,12 @@
+[workspace]
+authors = ["Lim Junmin <dsgoat99@naver.com>"]
+channels = ["conda-forge"]
+name = "SUDOKU"
+platforms = ["win-64"]
+version = "0.1.0"
+
+[tasks]
+start = "python sudoku_visualizer.py"
+
+[dependencies]
+pygame = ">=2.6.1,<3"

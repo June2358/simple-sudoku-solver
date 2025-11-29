@@ -71,15 +71,15 @@ def apply_hidden_singles(board: SudokuBoard, steps: List[str]) -> bool:
     units = get_all_units(board)
     unit_names = []
     # 행 이름
-    for i in range(9):
+    for i in range(board.SIZE):
         unit_names.append(f"행 {i+1}")
     # 열 이름
-    for j in range(9):
+    for j in range(board.SIZE):
         unit_names.append(f"열 {j+1}")
     # 박스 이름
-    for box_row in range(0, 9, 3):
-        for box_col in range(0, 9, 3):
-            box_num = (box_row // 3) * 3 + (box_col // 3) + 1
+    for box_row in range(0, board.SIZE, board.BOX_SIZE):
+        for box_col in range(0, board.SIZE, board.BOX_SIZE):
+            box_num = (box_row // board.BOX_SIZE) * board.BOX_SIZE + (box_col // board.BOX_SIZE) + 1
             unit_names.append(f"박스 {box_num}")
     
     found_any = False
@@ -120,7 +120,7 @@ def apply_locked_candidates(board: SudokuBoard, steps: List[str]) -> bool:
     # Type 1: Pointing (Box-to-Line)
     for box_row in range(0, board.SIZE, board.BOX_SIZE):
         for box_col in range(0, board.SIZE, board.BOX_SIZE):
-            for num in range(1, 10):
+            for num in range(1, board.SIZE + 1):
                 positions = []
                 for i in range(box_row, box_row + board.BOX_SIZE):
                     for j in range(box_col, box_col + board.BOX_SIZE):
@@ -148,7 +148,7 @@ def apply_locked_candidates(board: SudokuBoard, steps: List[str]) -> bool:
     
     # Type 2: Claiming (Line-to-Box)
     for i in range(board.SIZE):
-        for num in range(1, 10):
+        for num in range(1, board.SIZE + 1):
             positions = []
             for j in range(board.SIZE):
                 if board.board[i][j] == 0 and num in board.get_candidates(i, j):
@@ -166,7 +166,7 @@ def apply_locked_candidates(board: SudokuBoard, steps: List[str]) -> bool:
                                     progress = True
     
     for j in range(board.SIZE):
-        for num in range(1, 10):
+        for num in range(1, board.SIZE + 1):
             positions = []
             for i in range(board.SIZE):
                 if board.board[i][j] == 0 and num in board.get_candidates(i, j):
