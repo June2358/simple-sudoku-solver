@@ -33,7 +33,7 @@ from sudoku.gui_constants import (
     draw_sudoku_grid_lines,
     draw_conflict_cells,
 )
-from sudoku.visualizer import Button
+from sudoku.ui_components import Button
 from typing import Optional, Tuple, List
 
 
@@ -56,8 +56,10 @@ class SudokuInputDialog:
     def _init_screen(self, screen: Optional[pygame.Surface]):
         """화면 초기화"""
         screen_size = (InputDialogConstants.WIDTH, InputDialogConstants.HEIGHT)
-        # 현재 구현에서는 항상 새로운 창을 생성하므로 조건 분기 제거
-        self.screen = pygame.display.set_mode(screen_size)
+        if screen is not None and screen.get_size() == screen_size:
+            self.screen = screen
+        else:
+            self.screen = pygame.display.set_mode(screen_size)
 
         pygame.display.set_caption("스도쿠 문제 입력")
         pygame.event.clear()
@@ -392,6 +394,9 @@ class SudokuInputDialog:
         """난이도별 퍼즐 불러오기"""
         if 0 <= button_index < len(self.difficulties):
             puzzles = get_puzzles_by_difficulty(self.difficulties[button_index])
+            if not puzzles:
+                self.validation_error = "선택한 난이도에 불러올 퍼즐이 없습니다."
+                return
             random_puzzle = random.choice(puzzles)
             self.board = [row[:] for row in random_puzzle]
             self.selected_cell = None

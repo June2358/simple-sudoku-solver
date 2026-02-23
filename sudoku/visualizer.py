@@ -25,7 +25,6 @@ from sudoku.gui_constants import (
     CANDIDATE_GRAY,
     get_fonts,
     VisualizerConstants,
-    InputDialogConstants,
     draw_sudoku_grid_lines,
     draw_conflict_cells,
 )
@@ -44,101 +43,6 @@ EVENT_COLOR_MAP = {
     "SOLVED": PRIMARY,
     "INITIAL_STATE": ACCENT_LIGHT,
 }
-
-
-# ============================================================================
-# Button 클래스
-# ============================================================================
-
-
-class Button:
-    """버튼 UI 컴포넌트"""
-
-    def __init__(
-        self,
-        x: int,
-        y: int,
-        width: int,
-        height: int,
-        text: str,
-        color: Tuple[int, int, int],
-        font,
-        text_color: Tuple[int, int, int] = WHITE,
-    ):
-        self.rect = pygame.Rect(x, y, width, height)
-        self.text = text
-        self.base_color = color
-        self.font = font
-        self.text_color = text_color
-        self.is_hovered = False
-
-    def update_hover(self, mouse_pos: Tuple[int, int]):
-        """마우스 호버 상태 업데이트"""
-        self.is_hovered = self.rect.collidepoint(mouse_pos)
-
-    def is_clicked(self, mouse_pos: Tuple[int, int]) -> bool:
-        """버튼이 클릭되었는지 확인"""
-        return self.rect.collidepoint(mouse_pos)
-
-    def draw(self, screen: pygame.Surface):
-        """버튼 그리기"""
-        color = self._get_color()
-        border_color = tuple(
-            max(0, c - InputDialogConstants.BUTTON_BORDER_DARKEN) for c in color
-        )
-
-        # 그림자
-        shadow_rect = pygame.Rect(
-            self.rect.x + InputDialogConstants.BUTTON_SHADOW_OFFSET,
-            self.rect.y + InputDialogConstants.BUTTON_SHADOW_OFFSET,
-            self.rect.width,
-            self.rect.height,
-        )
-        shadow_surface = pygame.Surface((self.rect.width, self.rect.height))
-        shadow_surface.set_alpha(InputDialogConstants.BUTTON_SHADOW_ALPHA)
-        shadow_surface.fill(BLACK)
-        screen.blit(shadow_surface, shadow_rect.topleft)
-
-        # 버튼 배경
-        self._draw_rect(screen, color, self.rect)
-
-        # 테두리
-        self._draw_rect(screen, border_color, self.rect, width=2)
-
-        # 텍스트
-        text_surface = self.font.render(self.text, True, self.text_color)
-        text_rect = text_surface.get_rect(center=self.rect.center)
-        screen.blit(text_surface, text_rect)
-
-    def _get_color(self) -> Tuple[int, int, int]:
-        """현재 상태에 맞는 색상 반환"""
-        if self.is_hovered:
-            return tuple(
-                min(255, c + InputDialogConstants.BUTTON_HOVER_BRIGHTNESS)
-                for c in self.base_color
-            )
-        return self.base_color
-
-    @staticmethod
-    def _draw_rect(
-        screen: pygame.Surface,
-        color: Tuple[int, int, int],
-        rect: pygame.Rect,
-        width: int = 0,
-    ):
-        """사각형 그리기 (pygame 버전 호환)"""
-        # pygame 2.0+ border_radius 지원 확인 (try-except 방식)
-        border_radius = InputDialogConstants.BUTTON_BORDER_RADIUS
-        try:
-            if width == 0:
-                pygame.draw.rect(screen, color, rect, border_radius=border_radius)
-            else:
-                pygame.draw.rect(
-                    screen, color, rect, width, border_radius=border_radius
-                )
-        except TypeError:
-            # 호환성: border_radius 미지원 시 일반 사각형
-            pygame.draw.rect(screen, color, rect, width)
 
 
 # ============================================================================
@@ -173,8 +77,10 @@ class SudokuVisualizer:
             pygame.init()
 
         screen_size = (self.window_size + self.side_panel_width, self.window_size)
-        # 현재 구현에서는 항상 새로운 창을 생성하므로 조건 분기 제거
-        self.screen = pygame.display.set_mode(screen_size)
+        if screen is not None and screen.get_size() == screen_size:
+            self.screen = screen
+        else:
+            self.screen = pygame.display.set_mode(screen_size)
 
         pygame.display.set_caption("스도쿠 솔버 - 단계별 시각화")
         pygame.event.clear()

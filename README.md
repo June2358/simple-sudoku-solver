@@ -23,6 +23,12 @@
 가장 간단하고 직관적인 방법입니다:
 
 ```bash
+python -m sudoku
+```
+
+하위 호환 진입점도 유지됩니다:
+
+```bash
 python sudoku_visualizer.py
 ```
 
@@ -60,18 +66,25 @@ GUI를 사용하면 스도쿠 해결 과정을 시각적으로 확인할 수 있
 ## 프로젝트 구조
 
 ```
-sudoku/
-├── sudoku/              # 메인 패키지
-│   ├── __init__.py      # 패키지 초기화
-│   ├── board.py         # 스도쿠 보드 클래스
-│   ├── solver.py        # 솔버 클래스
-│   ├── techniques.py    # 해결 기법 구현
-│   ├── utils.py         # 유틸리티 함수 (보드 로드, 퍼즐 데이터)
-│   ├── puzzles.json     # 예제 퍼즐 데이터 (JSON)
-│   └── gui_constants.py # GUI 상수 정의
-├── sudoku_visualizer.py # pygame GUI 애플리케이션
-├── requirements.txt     # 의존성 목록
-└── README.md           # 이 파일
+00_SUDOKU/
+├── sudoku/                 # 메인 패키지
+│   ├── __init__.py         # 패키지 공개 API
+│   ├── __main__.py         # python -m sudoku 진입점
+│   ├── app.py              # 입력/시각화 화면 전환 흐름
+│   ├── board.py            # 스도쿠 보드 클래스
+│   ├── solver.py           # 솔버 클래스
+│   ├── solver_callbacks.py # step-by-step 콘솔 콜백
+│   ├── techniques.py       # 해결 기법 구현
+│   ├── input_dialog.py     # 문제 입력 화면
+│   ├── visualizer.py       # 단계별 시각화 화면
+│   ├── ui_components.py    # 공용 UI 컴포넌트
+│   ├── gui_constants.py    # GUI 상수/공용 그리기 유틸
+│   ├── utils.py            # 유틸리티 함수 (보드 로드, 퍼즐 데이터)
+│   └── puzzles.json        # 예제 퍼즐 데이터 (JSON)
+├── sudoku_visualizer.py    # 하위 호환 진입점
+├── pixi.toml               # pixi task/의존성 정의
+├── pixi.lock               # pixi lockfile
+└── README.md               # 이 파일
 ```
 
 ## 구현된 해결 기법
