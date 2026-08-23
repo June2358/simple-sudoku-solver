@@ -1,465 +1,424 @@
-"""
-스도쿠 솔버 모듈
+"""Human-style Sudoku reasoning with a complete-search safety net."""
 
-다양한 논리 기법과 백트래킹을 사용하여 스도쿠를 해결하는 클래스를 제공합니다.
-"""
+from dataclasses import dataclass
+from enum import Enum, auto
+from typing import Final
 
-from typing import List, Optional, Callable, Tuple, Dict, Any, Set
-from copy import deepcopy
-from .board import SudokuBoard
-from . import techniques
-from .solver_callbacks import create_console_step_callback
+from .board import Grid, Puzzle
+from .solve_types import (
+    Assignment,
+    CandidateGrid,
+    Elimination,
+    SolveResult,
+    SolveStatus,
+    SolveStep,
+    StepKind,
+    Technique,
+    TechniqueResult,
+)
+from .solver_state import SolverState
+from .techniques import find_next_deduction
+from .topology import CELLS, COLS, DIGITS, ROWS, UNITS, Cell
+
+_SOLUTION_LIMIT: Final = 2
+type _StateSnapshot = tuple[Grid, CandidateGrid]
+
+
+class _ProbeOutcome(Enum):
+    REFUTED = auto()
+    SOLVED = auto()
+    STALLED = auto()
+
+
+@dataclass(frozen=True, slots=True)
+class _ProbeResult:
+    outcome: _ProbeOutcome
+    solution: _StateSnapshot | None = None
 
 
 class SudokuSolver:
-    """스도쿠를 푸는 다양한 전략을 가진 솔버"""
+    """Explain simple logic and one-ply refutations, then find up to two solutions."""
 
-    def __init__(
-        self,
-        board: SudokuBoard,
-        on_step: Optional[Callable[[Dict[str, Any]], None]] = None,
-        depth: int = 0,
-        assumptions: Optional[List[Tuple[int, int]]] = None,
-    ):
-        self.board = deepcopy(board)
-        self.steps: List[str] = []  # 해결 과정 기록
-        self.on_step = on_step
-        self.depth = depth
-        self.assumptions = list(assumptions or [])
+    __slots__ = ("_puzzle",)
 
-    def _copy_board_state(self, board: Optional[SudokuBoard] = None) -> List[List[int]]:
-        """보드 상태를 복사하여 반환 (헬퍼 메서드)"""
-        target = board or self.board
-        return [
-            [target.board[i][j] for j in range(target.SIZE)] for i in range(target.SIZE)
-        ]
+    def __init__(self, puzzle: Puzzle):
+        if not isinstance(puzzle, Puzzle):
+            raise TypeError("SudokuSolver는 Puzzle을 받아야 합니다.")
+        self._puzzle = puzzle
 
-    def _copy_candidates_state(
-        self, board: Optional[SudokuBoard] = None
-    ) -> List[List[Set[int]]]:
-        """현재 후보 상태를 깊은 복사로 반환"""
-        target = board or self.board
-        return [
-            [target.candidates[i][j].copy() for j in range(target.SIZE)]
-            for i in range(target.SIZE)
-        ]
+    def solve(self) -> SolveResult:
+        """Solve the puzzle and distinguish zero, one, or multiple solutions.
 
-    def _snapshot_from_board(
-        self, board: SudokuBoard
-    ) -> Tuple[List[List[int]], List[List[Set[int]]]]:
-        """주어진 보드로부터 상태 스냅샷 생성"""
-        return self._copy_board_state(board), self._copy_candidates_state(board)
+        The visible trace permits at most one active assumption. At a logical
+        fixed point, every two-candidate cell is visited in row-major order and
+        its candidates are tried independently in ascending order. A
+        contradictory candidate is removed and normal logic resumes. A
+        completed branch supplies a valid representative solution; the later
+        silent search still checks whether another solution exists. If every
+        branch stalls, recursive MRV search runs silently and the trace marks
+        the exact point where the human-readable explanation ended.
+        """
 
-    def _emit_step(
-        self,
-        event_type: str,
-        technique_name: Optional[str] = None,
-        filled_cell: Optional[Tuple[int, int]] = None,
-        highlighted: Optional[List[Tuple[int, int]]] = None,
-        message: Optional[str] = None,
-        value: Optional[int] = None,
-        board_override: Optional[SudokuBoard] = None,
-        assumptions_override: Optional[List[Tuple[int, int]]] = None,
-    ) -> None:
-        """시각화/로그를 위한 이벤트 전파"""
-        if not self.on_step:
-            return
+        steps: list[SolveStep] = []
 
-        if board_override is not None:
-            board_state, candidates_state = self._snapshot_from_board(board_override)
+        state = SolverState(self._puzzle)
+        steps.append(
+            self._step_from_state(
+                StepKind.INITIAL_STATE,
+                state,
+                message="초기 후보 상태",
+            )
+        )
+
+        preferred_solution = self._run_human_reasoning(state, steps)
+        search_required = (
+            preferred_solution is None
+            and not state.is_complete()
+            and not state.has_contradiction()
+        )
+        if search_required:
+            steps.append(
+                self._step_from_state(
+                    StepKind.SEARCH_FALLBACK,
+                    state,
+                    message=(
+                        "2후보 셀의 한 단계 가정으로는 더 설명하기 어려워, "
+                        "여기부터는 MRV 백트래킹으로 전환합니다."
+                    ),
+                )
+            )
+
+        solutions: list[_StateSnapshot] = []
+        if preferred_solution is not None:
+            solutions.append(preferred_solution)
+        self._collect_solutions(state.clone(), solutions)
+
+        if not solutions:
+            status = SolveStatus.UNSOLVABLE
+            steps.append(
+                self._step_from_state(
+                    StepKind.UNSOLVABLE,
+                    state,
+                    message="현재 단서로 가능한 해가 없습니다.",
+                )
+            )
         else:
-            board_state = self._copy_board_state()
-            candidates_state = self._copy_candidates_state()
+            status = (
+                SolveStatus.SOLVED_MULTIPLE
+                if len(solutions) >= _SOLUTION_LIMIT
+                else SolveStatus.SOLVED_UNIQUE
+            )
+            solution, solution_candidates = solutions[0]
 
-        event_assumptions = (
-            assumptions_override
-            if assumptions_override is not None
-            else list(self.assumptions)
+            terminal_message = (
+                "해가 둘 이상 존재합니다. 표시한 보드는 가능한 해 중 하나입니다."
+                if status is SolveStatus.SOLVED_MULTIPLE
+                else "유일한 해를 확인했습니다."
+            )
+            steps.append(
+                SolveStep(
+                    kind=StepKind.SOLVED,
+                    grid=solution,
+                    candidates=solution_candidates,
+                    message=terminal_message,
+                )
+            )
+
+        return SolveResult(
+            status=status,
+            steps=tuple(steps),
         )
 
-        event = {
-            "event_type": event_type,
-            "technique_name": technique_name or "",
-            "filled_cell": filled_cell,
-            "highlighted": highlighted or [],
-            "message": message,
-            "value": value,
-            "depth": self.depth,
-            "assumptions": event_assumptions,
-            "board_state": board_state,
-            "candidates_state": candidates_state,
-        }
-        self.on_step(event)
-
-    @staticmethod
-    def _format_cells_message(technique: str, cells: List[Tuple[int, int]]) -> str:
-        if not cells:
-            return technique
-        locations = ", ".join(f"R{r + 1}C{c + 1}" for r, c in cells[:3])
-        if len(cells) > 3:
-            locations += f" 외 {len(cells) - 3}개"
-        return f"{technique}: {locations}"
-
-    def _apply_single_technique_step(
+    def _run_human_reasoning(
         self,
-        technique_func: Callable[[SudokuBoard, List[str]], bool],
-        technique_name: str,
-        prev_state: List[List[int]],
-    ) -> Tuple[bool, bool, List[List[int]]]:
-        """
-        Naked/Hidden Single 한 번 적용 단계.
-
-        Returns:
-            (changed, solved, new_prev_state)
-        """
-        if not technique_func(self.board, self.steps):
-            return False, False, prev_state
-
-        filled_cells = self._find_filled_cells(prev_state)
-        if filled_cells:
-            self._emit_step(
-                event_type="LOGIC",
-                technique_name=technique_name,
-                highlighted=filled_cells,
-                filled_cell=filled_cells[0] if len(filled_cells) == 1 else None,
-                message=self._format_cells_message(technique_name, filled_cells),
-            )
-
-        new_prev_state = self._copy_board_state()
-        if self.board.is_complete():
-            return True, True, new_prev_state
-
-        return True, False, new_prev_state
-
-    def solve(
-        self,
-        step_by_step: bool = False,
-        on_step: Optional[Callable[[Dict[str, Any]], None]] = None,
-    ) -> bool:
-        """
-        스도쿠를 논리적 기법으로 풀기 (가이드 기반)
-
-        Args:
-            step_by_step: True면 각 단계마다 콘솔에 상태를 출력 (내부적으로 on_step 콜백 사용)
-            on_step: 각 단계마다 호출되는 콜백 함수
-                    (event_dict) -> None
-        """
-        if step_by_step and on_step is None:
-            on_step = create_console_step_callback()
-
-        if on_step is not None:
-            self.on_step = on_step
-
-        if not self.board.is_valid():
-            self._emit_step(
-                event_type="CONTRADICTION",
-                technique_name="초기 보드 검증 실패",
-                message="초기 보드에 중복된 숫자가 있어 풀이를 시작할 수 없습니다.",
-            )
-            return False
-
-        max_iterations = 1000
-        iteration = 0
-
-        self._emit_step(
-            event_type="INITIAL_STATE",
-            technique_name="초기 상태",
-            message="초기 후보 상태",
-        )
-
-        prev_board_state = self._copy_board_state()
-
-        while not self.board.is_complete() and iteration < max_iterations:
-            iteration += 1
-
-            # 핵심 원칙 1: 값 확정 (Singles) - 가장 강력하고 저렴함
-            singles_completed, prev_board_state = self._run_singles_phase(
-                prev_board_state
-            )
-            if singles_completed:
-                return True
-
-            if prev_board_state is None:
-                # 싱글 단계에서 변화가 있었고 루프를 다시 돌도록 요청된 경우
-                prev_board_state = self._copy_board_state()
-                continue
-
-            # 핵심 원칙 2: 후보 제거 (Singles로 풀리지 않을 때만 실행)
-            candidate_result, prev_board_state = self._run_candidate_phase(
-                prev_board_state
-            )
-            if candidate_result is not None:
-                return candidate_result
-
-        return self.board.is_complete()
-
-    def _run_singles_phase(
-        self, prev_board_state: List[List[int]]
-    ) -> Tuple[bool, Optional[List[List[int]]]]:
-        """
-        Naked / Hidden Singles를 반복 적용하는 단계.
-
-        Returns:
-            (is_solved, new_prev_board_state_or_none)
-            - is_solved: 보드가 완전히 해결되었으면 True
-            - new_prev_board_state_or_none:
-                * 싱글 단계에서 변화가 있었고, 상위 solve 루프를 다시 돌려야 하면 None
-                * 변화를 만들지 못했으면 기존 prev_board_state를 그대로 반환
-        """
-        changes_made_in_singles = False
+        state: SolverState,
+        steps: list[SolveStep],
+    ) -> _StateSnapshot | None:
+        """Run fixed-point logic and sequential, non-nested bivalue probes."""
 
         while True:
-            changed, solved, prev_board_state = self._apply_single_technique_step(
-                techniques.apply_naked_singles,
-                "Naked Single",
-                prev_board_state,
-            )
-            if solved:
-                return True, prev_board_state
-            if changed:
-                changes_made_in_singles = True
-                continue
+            if not self._propagate_logic(state, assumption=None, steps=steps):
+                return None
+            if state.is_complete():
+                return self._snapshot(state)
 
-            changed, solved, prev_board_state = self._apply_single_technique_step(
-                techniques.apply_hidden_singles,
-                "Hidden Single",
-                prev_board_state,
-            )
-            if solved:
-                return True, prev_board_state
-            if changed:
-                changes_made_in_singles = True
-                continue
+            probe_result = self._probe_bivalue_candidates(state, steps)
+            if probe_result.outcome is _ProbeOutcome.SOLVED:
+                if probe_result.solution is None:
+                    raise RuntimeError("완성된 가정 결과에 해가 없습니다.")
+                return probe_result.solution
+            if probe_result.outcome is _ProbeOutcome.STALLED:
+                return None
 
-            # 두 기법 모두 더 이상 변화를 만들지 못하면 종료
-            break
+    def _probe_bivalue_candidates(
+        self,
+        state: SolverState,
+        steps: list[SolveStep],
+    ) -> _ProbeResult:
+        """Try each current bivalue candidate until one is decisive."""
 
-        if changes_made_in_singles:
-            # 상위 루프에서 다시 싱글/후보 단계를 평가하도록 prev_state는 solve에서 재설정
-            return False, None
+        bivalue_cells = tuple(
+            cell for cell in state.empty_cells() if len(state.candidates_at(cell)) == 2
+        )
+        for cell in bivalue_cells:
+            for value in sorted(state.candidates_at(cell)):
+                result = self._probe_candidate(
+                    state,
+                    Assignment(cell, value),
+                    steps,
+                )
+                if result.outcome is not _ProbeOutcome.STALLED:
+                    return result
+        return _ProbeResult(_ProbeOutcome.STALLED)
 
-        return False, prev_board_state
+    def _probe_candidate(
+        self,
+        state: SolverState,
+        decision: Assignment,
+        steps: list[SolveStep],
+    ) -> _ProbeResult:
+        """Run ordinary logic under one assumption without nesting probes."""
 
-    def _run_candidate_phase(
-        self, prev_board_state: List[List[int]]
-    ) -> Tuple[Optional[bool], List[List[int]]]:
-        """
-        Locked Candidates, Naked/Hidden Subsets 등을 적용하는 단계.
+        row, col = decision.cell
+        value = decision.value
+        branch = state.clone()
+        if not branch.set_value(decision.cell, value):
+            raise RuntimeError("현재 2후보 셀의 후보를 가정 상태에 적용할 수 없습니다.")
 
-        Returns:
-            (result, new_prev_board_state)
-            - result:
-                * True  -> 해결 완료
-                * False -> 모순 또는 백트래킹 종료
-                * None  -> 아직 해결/실패가 아니며, 상위 루프를 계속 진행
-        """
-        techniques_to_apply = [
-            ("Locked Candidates", techniques.apply_locked_candidates),
-            ("Naked Pairs", lambda b, s: techniques.apply_naked_subsets(b, s, 2)),
-            ("Hidden Pairs", lambda b, s: techniques.apply_hidden_subsets(b, s, 2)),
-            ("Naked Triples", lambda b, s: techniques.apply_naked_subsets(b, s, 3)),
-            ("Hidden Triples", lambda b, s: techniques.apply_hidden_subsets(b, s, 3)),
-            ("Naked Quads", lambda b, s: techniques.apply_naked_subsets(b, s, 4)),
-            ("Hidden Quads", lambda b, s: techniques.apply_hidden_subsets(b, s, 4)),
-        ]
-
-        for technique_name, func in techniques_to_apply:
-            if func(self.board, self.steps):
-                if self._apply_candidate_removal_technique(
-                    technique_name, prev_board_state
-                ):
-                    return True, self._copy_board_state()
-                prev_board_state = self._copy_board_state()
-                return None, prev_board_state
-
-        # 종료 조건
-        if self.board.is_complete():
-            self._emit_step(
-                event_type="SOLVED",
-                technique_name="해결 완료",
-                message="스도쿠 해결 완료",
-            )
-            return True, prev_board_state
-        if self._is_invalid():
-            self._emit_step(
-                event_type="CONTRADICTION",
-                technique_name="오류: 유효하지 않은 상태",
-                message="빈 칸에 가능한 후보가 없습니다.",
-            )
-            return False, prev_board_state
-
-        empty_cells = self.board.get_empty_cells()
-        if empty_cells:
-            best_cell = min(
-                empty_cells,
-                key=lambda cell: len(self.board.get_candidates(cell[0], cell[1])),
-            )
-            row, col = best_cell
-            candidates = list(self.board.get_candidates(row, col))
-            self._emit_step(
-                event_type="BACKTRACK_PREP",
-                technique_name="백트래킹 시작",
-                highlighted=[(row, col)],
+        steps.append(
+            self._step_from_state(
+                StepKind.ASSUMPTION,
+                branch,
+                assumption=decision,
                 message=(
-                    f"논리 기법 종료. R{row + 1}C{col + 1} 후보 "
-                    f"{sorted(candidates)}로 백트래킹 진행."
+                    f"2후보 셀 가정: R{row + 1}C{col + 1} = {value}로 두고 "
+                    "추가 가정 없이 기존 논리만 적용합니다."
                 ),
             )
-        return self._backtrack(), prev_board_state
+        )
 
-    def _find_filled_cells(self, prev_state: List[List[int]]) -> List[Tuple[int, int]]:
-        """이전 상태와 비교하여 새로 채워진 모든 셀 찾기"""
-        filled = []
-        for i in range(self.board.SIZE):
-            for j in range(self.board.SIZE):
-                if prev_state[i][j] == 0 and self.board.board[i][j] != 0:
-                    filled.append((i, j))
-        return filled
+        if not self._propagate_logic(
+            branch,
+            assumption=decision,
+            steps=steps,
+        ):
+            removed = state.remove_candidates(decision.cell, {value})
+            if removed != frozenset({value}):
+                raise RuntimeError(
+                    "모순이 증명된 후보를 원래 상태에서 제거할 수 없습니다."
+                )
 
-    def _apply_candidate_removal_technique(
-        self, technique_name: str, prev_board_state: List[List[int]]
+            deduction = TechniqueResult(
+                technique=Technique.REFUTATION,
+                eliminations=(Elimination(decision.cell, removed),),
+                evidence_cells=(decision.cell,),
+                explanation="이 후보를 참이라고 가정하면 모순이 발생합니다.",
+            )
+            steps.append(
+                self._step_from_state(
+                    StepKind.REFUTATION,
+                    state,
+                    deduction=deduction,
+                    assumption=decision,
+                )
+            )
+            return _ProbeResult(_ProbeOutcome.REFUTED)
+
+        if branch.is_complete():
+            steps.append(
+                self._step_from_state(
+                    StepKind.ASSUMPTION_SOLVED,
+                    branch,
+                    assumption=decision,
+                    message=(
+                        f"R{row + 1}C{col + 1} = {value} 가정에서 "
+                        "추가 가정 없이 해 하나를 완성했습니다."
+                    ),
+                )
+            )
+            return _ProbeResult(
+                _ProbeOutcome.SOLVED,
+                solution=self._snapshot(branch),
+            )
+
+        steps.append(
+            self._step_from_state(
+                StepKind.ASSUMPTION_STALLED,
+                branch,
+                assumption=decision,
+                message=(
+                    f"R{row + 1}C{col + 1} = {value} 가정에서는 "
+                    "모순도 완성도 나오지 않아 원래 상태로 돌아갑니다."
+                ),
+            )
+        )
+        return _ProbeResult(_ProbeOutcome.STALLED)
+
+    def _collect_solutions(
+        self,
+        state: SolverState,
+        solutions: list[_StateSnapshot],
+    ) -> None:
+        """Recursively collect distinct solutions without adding trace steps."""
+
+        if len(solutions) >= _SOLUTION_LIMIT:
+            return
+        if not self._propagate_logic(state, assumption=None, steps=None):
+            return
+
+        if state.is_complete():
+            snapshot = self._snapshot(state)
+            if all(existing_grid != snapshot[0] for existing_grid, _ in solutions):
+                solutions.append(snapshot)
+            return
+
+        cell = self._mrv_cell(state)
+        for value in sorted(state.candidates_at(cell)):
+            if len(solutions) >= _SOLUTION_LIMIT:
+                return
+            branch = state.clone()
+            if branch.set_value(cell, value):
+                self._collect_solutions(branch, solutions)
+
+    def _propagate_logic(
+        self,
+        state: SolverState,
+        *,
+        assumption: Assignment | None,
+        steps: list[SolveStep] | None,
     ) -> bool:
-        """
-        후보 제거 기법 적용 후 처리 (후보 제거 결과 저장 + Singles 체크)
-        Returns: True if board is complete
-        """
-        self._emit_step(
-            event_type="CANDIDATE_REMOVAL",
-            technique_name=technique_name,
-            message=f"{technique_name} 적용으로 후보 제거",
-        )
-        prev_state = self._copy_board_state()
+        """Apply supported logical deductions to a fixed point or contradiction."""
 
-        # 후보 제거 후 즉시 Singles 체크 (후보 제거로 인해 값이 채워질 수 있음)
         while True:
-            changed, solved, prev_state = self._apply_single_technique_step(
-                techniques.apply_naked_singles,
-                "Naked Single",
-                prev_state,
-            )
-            if solved:
-                return True
-            if changed:
-                continue
-
-            changed, solved, prev_state = self._apply_single_technique_step(
-                techniques.apply_hidden_singles,
-                "Hidden Single",
-                prev_state,
-            )
-            if solved:
-                return True
-            if changed:
-                continue
-
-            # 두 기법 모두 더 이상 변화를 만들지 못하면 종료
-            break
-
-        return False
-
-    def _is_invalid(self) -> bool:
-        """퍼즐 상태가 유효하지 않은지 확인 (후보가 0개인 빈 셀이 있는지)"""
-        for i in range(self.board.SIZE):
-            for j in range(self.board.SIZE):
-                if self.board.board[i][j] == 0:
-                    if len(self.board.candidates[i][j]) == 0:
-                        self._emit_step(
-                            event_type="CONTRADICTION",
-                            technique_name="후보 소진",
-                            highlighted=[(i, j)],
-                            message=f"R{i + 1}C{j + 1}에 남은 후보가 없습니다.",
+            if state.has_contradiction():
+                if steps is not None:
+                    steps.append(
+                        self._step_from_state(
+                            StepKind.CONTRADICTION,
+                            state,
+                            assumption=assumption,
+                            message=self._contradiction_message(state),
                         )
-                        return True
-        return False
+                    )
+                return False
 
-    def _backtrack(self) -> bool:
-        """백트래킹으로 남은 부분 해결"""
-        empty_cells = self.board.get_empty_cells()
+            deduction = find_next_deduction(
+                state.to_grid(),
+                state.candidate_grid(),
+            )
+            if deduction is None:
+                return True
+
+            self._apply_deduction(state, deduction)
+            if steps is not None:
+                steps.append(
+                    self._step_from_state(
+                        StepKind.TECHNIQUE,
+                        state,
+                        deduction=deduction,
+                        assumption=assumption,
+                    )
+                )
+
+    @staticmethod
+    def _mrv_cell(state: SolverState) -> Cell:
+        empty_cells = state.empty_cells()
         if not empty_cells:
-            return self.board.is_complete()
-
-        # 가장 적은 후보를 가진 칸 선택 (MRV)
-        best_cell = min(
+            raise RuntimeError("완성된 상태에서는 MRV 셀을 선택할 수 없습니다.")
+        return min(
             empty_cells,
-            key=lambda cell: len(self.board.get_candidates(cell[0], cell[1])),
+            key=lambda cell: (len(state.candidates_at(cell)), cell),
         )
-        row, col = best_cell
 
-        # 집합 순서에 의존하지 않도록 후보를 정렬해 재현성을 보장한다.
-        candidates = sorted(self.board.get_candidates(row, col))
-        if not candidates:
-            self._emit_step(
-                event_type="CONTRADICTION",
-                technique_name="백트래킹 실패",
-                highlighted=[(row, col)],
-                message=f"R{row + 1}C{col + 1}에 가능한 후보가 없습니다.",
+    @staticmethod
+    def _snapshot(state: SolverState) -> _StateSnapshot:
+        return state.to_grid(), state.candidate_grid()
+
+    @staticmethod
+    def _apply_deduction(state: SolverState, result: TechniqueResult) -> None:
+        """Apply one logical wave previously computed from the unchanged state."""
+
+        if not result.has_changes:
+            raise RuntimeError("변경이 없는 논리 기법 결과는 적용할 수 없습니다.")
+
+        for elimination in result.eliminations:
+            removed = state.remove_candidates(elimination.cell, elimination.values)
+            if removed != elimination.values:
+                raise RuntimeError("기법 결과가 현재 후보 상태와 일치하지 않습니다.")
+
+        for assignment in result.assignments:
+            if not state.set_value(assignment.cell, assignment.value):
+                raise RuntimeError(
+                    "기법이 현재 상태에 적용할 수 없는 값을 배치했습니다."
+                )
+
+    @classmethod
+    def _contradiction_message(cls, state: SolverState) -> str:
+        cell = cls._first_exhausted_cell(state)
+        if cell is not None:
+            return (
+                "모순을 발견했습니다. "
+                f"R{cell[0] + 1}C{cell[1] + 1}에 남은 후보가 없습니다."
             )
-            return False
 
-        for value in candidates:
-            board_copy = deepcopy(self.board)
-            if board_copy.set_value(row, col, value):
-                self.steps.append(f"백트래킹 시도: ({row + 1},{col + 1}) = {value}")
-                new_assumptions = self.assumptions + [(row, col)]
-                self._emit_step(
-                    event_type="GUESS_START",
-                    technique_name="백트래킹 추측",
-                    highlighted=[(row, col)],
-                    filled_cell=(row, col),
-                    value=value,
-                    message=f"{'  ' * self.depth}▶ [추측] R{row + 1}C{col + 1} = {value}",
-                    board_override=board_copy,
-                    assumptions_override=new_assumptions,
-                )
-                solver = SudokuSolver(
-                    board_copy,
-                    on_step=self.on_step,
-                    depth=self.depth + 1,
-                    assumptions=new_assumptions,
-                )
-                if solver.solve():
-                    self.board = solver.board
-                    self.steps.extend(solver.steps)
-                    self.steps.append(
-                        f"백트래킹 성공: ({row + 1},{col + 1}) = {value}가 정답"
-                    )
-                    if self.depth == 0:
-                        self._emit_step(
-                            event_type="GUESS_SUCCESS",
-                            technique_name="백트래킹 확정",
-                            highlighted=[(row, col)],
-                            filled_cell=(row, col),
-                            value=value,
-                            message="백트래킹 가정 확정: 모든 추측이 성공적으로 검증되었습니다.",
-                        )
-                    return True
-                else:
-                    self.steps.append(
-                        f"백트래킹 실패: ({row + 1},{col + 1}) = {value}는 불가능"
-                    )
-                    self._emit_step(
-                        event_type="GUESS_FAIL",
-                        technique_name="백트래킹 철회",
-                        highlighted=[(row, col)],
-                        filled_cell=(row, col),
-                        value=value,
-                        message=f"{'  ' * self.depth}✗ [철회] R{row + 1}C{col + 1} = {value}는 모순",
-                        board_override=board_copy,
-                        assumptions_override=new_assumptions,
-                    )
+        missing = cls._first_missing_unit_digit(state)
+        if missing is not None:
+            unit_name, value = missing
+            return f"모순을 발견했습니다. {unit_name}에 숫자 {value}가 들어갈 곳이 없습니다."
 
-        self._emit_step(
-            event_type="BACKTRACK_FAIL",
-            technique_name="백트래킹 실패",
-            highlighted=[(row, col)],
-            message="모든 후보 시도 실패. 상위로 돌아갑니다.",
+        return "모순을 발견했습니다. 같은 숫자가 한 단위에서 충돌합니다."
+
+    @staticmethod
+    def _first_exhausted_cell(state: SolverState) -> Cell | None:
+        return next(
+            (
+                cell
+                for cell in CELLS
+                if state.value_at(cell) == 0 and not state.candidates_at(cell)
+            ),
+            None,
         )
-        return False
 
-    def get_solution(self) -> SudokuBoard:
-        """해결된 스도쿠 판 반환"""
-        return self.board
+    @classmethod
+    def _first_missing_unit_digit(
+        cls,
+        state: SolverState,
+    ) -> tuple[str, int] | None:
+        for unit_index, unit in enumerate(UNITS):
+            for value in sorted(DIGITS):
+                if any(
+                    state.value_at(cell) == value
+                    or (
+                        state.value_at(cell) == 0 and value in state.candidates_at(cell)
+                    )
+                    for cell in unit
+                ):
+                    continue
+                return cls._unit_name(unit_index), value
+        return None
 
-    def get_steps(self) -> List[str]:
-        """해결 과정 반환"""
-        return self.steps
+    @staticmethod
+    def _unit_name(unit_index: int) -> str:
+        if unit_index < len(ROWS):
+            return f"{unit_index + 1}행"
+        if unit_index < len(ROWS) + len(COLS):
+            return f"{unit_index - len(ROWS) + 1}열"
+        return f"{unit_index - len(ROWS) - len(COLS) + 1}번 박스"
+
+    @staticmethod
+    def _step_from_state(
+        kind: StepKind,
+        state: SolverState,
+        *,
+        deduction: TechniqueResult | None = None,
+        assumption: Assignment | None = None,
+        message: str = "",
+    ) -> SolveStep:
+        return SolveStep(
+            kind=kind,
+            grid=state.to_grid(),
+            candidates=state.candidate_grid(),
+            deduction=deduction,
+            assumption=assumption,
+            message=message,
+        )

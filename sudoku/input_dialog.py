@@ -1,530 +1,495 @@
-"""
-스도쿠 입력 다이얼로그 모듈
+"""Editable Sudoku input screen, including strict external-AI JSON paste."""
 
-사용자가 스도쿠 문제를 입력하거나 불러올 수 있는 GUI 다이얼로그입니다.
-"""
+from collections.abc import Iterable
 
 import pygame
-import random
-from sudoku import SudokuBoard
-from sudoku.utils import (
-    get_puzzles_by_difficulty,
-    get_all_puzzles,
-    get_available_difficulties,
-    get_conflicting_cells,
+
+from .board import (
+    InvalidBoardError,
+    Puzzle,
+    find_conflicting_cells,
+    validate_grid,
 )
-from sudoku.gui_constants import (
-    WHITE,
-    BLACK,
-    GRAY,
-    LIGHT_GRAY,
-    RED,
-    ORANGE,
-    DARK_BLUE,
-    PRIMARY,
-    PRIMARY_DARK,
+from .matrix_input import (
+    OCR_MATRIX_PROMPT,
+    ClipboardError,
+    copy_text,
+    paste_text,
+)
+from .matrix_parser import MatrixParseError, parse_matrix_json
+from .puzzle_catalog import load_puzzle_catalog
+from .topology import SIZE, Cell
+from .ui_components import Button
+from .ui_style import (
     ACCENT,
     ACCENT_YELLOW,
     ACCENT_YELLOW_LIGHT,
-    get_fonts,
-    get_title_font,
-    VisualizerConstants,
-    InputDialogConstants,
-    draw_sudoku_grid_lines,
+    APP_BACKGROUND,
+    BLACK,
+    BORDER,
+    GRAY,
+    LIGHT_GRAY,
+    PRIMARY_DARK,
+    RED,
+    SURFACE_HOVER,
+    SURFACE_SUBTLE,
+    WHITE,
+    configure_display,
     draw_conflict_cells,
+    draw_sudoku_grid_lines,
+    get_fonts,
+    wrap_text,
 )
-from sudoku.ui_components import Button
-from typing import Optional, Tuple, List
+
+_CELL_SIZE = 60
+_MARGIN = 45
+_PANEL_WIDTH = 300
+_PANEL_GAP = 30
+_GRID_START_Y = 70
+_DIALOG_WIDTH = SIZE * _CELL_SIZE + _PANEL_WIDTH + _PANEL_GAP + 2 * _MARGIN
+_DIALOG_HEIGHT = 2 * _GRID_START_Y + SIZE * _CELL_SIZE
+_PANEL_PADDING = 18
+_BUTTON_HEIGHT = 42
+_BUTTON_SPACING = 9
+_BUTTON_ROW_SPACING = 10
+_BUTTONS_PER_ROW = 3
+_ERROR_MESSAGE_SPACING = 22
 
 
 class SudokuInputDialog:
-    """스도쿠 문제 입력 다이얼로그"""
+    """Collect and validate a puzzle before it enters the solver."""
 
-    def __init__(self, initial_board=None, screen=None):
-        self._init_pygame()
-        self._init_screen(screen)
+    def __init__(
+        self,
+        initial_board: object | None = None,
+        initial_error: str | None = None,
+    ) -> None:
+        self._init_screen()
         self._init_fonts()
         self._init_layout()
-        self._init_state(initial_board)
+        self._init_state(initial_board, initial_error)
         self._init_buttons()
 
-    def _init_pygame(self):
-        """pygame 초기화"""
-        if not pygame.get_init():
-            pygame.init()
+    def _init_screen(self) -> None:
+        screen_size = (_DIALOG_WIDTH, _DIALOG_HEIGHT)
+        self.screen = configure_display(screen_size, "스도쿠 문제 입력")
 
-    def _init_screen(self, screen: Optional[pygame.Surface]):
-        """화면 초기화"""
-        screen_size = (InputDialogConstants.WIDTH, InputDialogConstants.HEIGHT)
-        if screen is not None and screen.get_size() == screen_size:
-            self.screen = screen
-        else:
-            self.screen = pygame.display.set_mode(screen_size)
+    def _init_fonts(self) -> None:
+        self.fonts = get_fonts()
 
-        pygame.display.set_caption("스도쿠 문제 입력")
-        pygame.event.clear()
+    def _init_layout(self) -> None:
+        self.cell_size = _CELL_SIZE
+        self.grid_width = SIZE * self.cell_size
+        self.grid_start_x = _MARGIN
+        self.grid_start_y = _GRID_START_Y
+        self.panel_x = self.grid_start_x + self.grid_width + _PANEL_GAP
+        self.panel_inner_width = _PANEL_WIDTH - 2 * _PANEL_PADDING
 
-    def _init_fonts(self):
-        """폰트 초기화"""
-        font, small_font, _, _, bold_font, _ = get_fonts()
-        self.font = font
-        self.small_font = small_font
-        self.bold_font = bold_font
-        self.title_font = get_title_font()
-
-    def _init_layout(self):
-        """레이아웃 초기화"""
-        self.cell_size = InputDialogConstants.CELL_SIZE
-        self.margin = InputDialogConstants.MARGIN
-        self.grid_width = SudokuBoard.SIZE * self.cell_size
-        self.grid_start_x = self.margin
-        self.grid_start_y = InputDialogConstants.GRID_START_Y
-        self.panel_x = (
-            self.grid_start_x + self.grid_width + InputDialogConstants.PANEL_GAP
-        )
-        self.panel_inner_width = (
-            InputDialogConstants.PANEL_WIDTH - 2 * InputDialogConstants.PANEL_PADDING
-        )
-
-    def _init_state(self, initial_board):
-        """상태 초기화"""
-        if initial_board:
-            self.board = [row[:] for row in initial_board]
-        else:
-            self.board = [[0] * SudokuBoard.SIZE for _ in range(SudokuBoard.SIZE)]
-
-        self.selected_cell = None
+    def _init_state(
+        self, initial_board: object | None, initial_error: str | None
+    ) -> None:
+        self.board = [[0] * SIZE for _ in range(SIZE)]
+        if initial_board is not None:
+            normalized = validate_grid(initial_board)
+            self.board = [list(row) for row in normalized]
+        self.selected_cell: Cell | None = None
         self.running = True
-        self.validation_error = None
-        self.conflicting_cells: List[Tuple[int, int]] = []
-        self.instructions_bottom = self.grid_start_y
+        self.validation_error = initial_error
+        self.notice_message: str | None = None
+        self.conflicting_cells = find_conflicting_cells(self.board)
 
-    def _init_buttons(self):
-        """버튼 초기화"""
-        # 난이도 목록은 한 번만 로드하여 인스턴스 수명 동안 재사용
-        self.difficulties = get_available_difficulties()
-        num_difficulties = len(self.difficulties)
+    def _init_buttons(self) -> None:
+        self.puzzle_catalog = load_puzzle_catalog()
+        self.difficulties = tuple(self.puzzle_catalog)
+        cols = min(_BUTTONS_PER_ROW, len(self.difficulties))
+        rows = (len(self.difficulties) + cols - 1) // cols
+        spacing = _BUTTON_SPACING
+        button_width = (self.panel_inner_width - (cols - 1) * spacing) // cols
+        button_start_y = self.grid_start_y + 44
 
-        button_spacing = InputDialogConstants.BUTTON_SPACING
+        self.buttons: list[Button] = []
+        for index, difficulty in enumerate(self.difficulties):
+            row, col = divmod(index, cols)
+            x = self.panel_x + _PANEL_PADDING + col * (button_width + spacing)
+            y = button_start_y + row * (_BUTTON_HEIGHT + _BUTTON_ROW_SPACING)
+            self.buttons.append(
+                Button(
+                    pygame.Rect(
+                        x,
+                        y,
+                        button_width,
+                        _BUTTON_HEIGHT,
+                    ),
+                    difficulty,
+                    SURFACE_SUBTLE,
+                    self.fonts.body,
+                    text_color=BLACK,
+                    hover_color=SURFACE_HOVER,
+                    border_color=BORDER,
+                )
+            )
 
-        button_start_y = self.grid_start_y
-        button_colors = self._get_button_colors(num_difficulties)
-        cols = (
-            min(InputDialogConstants.BUTTONS_PER_ROW, num_difficulties)
-            if num_difficulties
-            else 0
+        difficulty_bottom = (
+            button_start_y
+            + (rows - 1) * (_BUTTON_HEIGHT + _BUTTON_ROW_SPACING)
+            + _BUTTON_HEIGHT
         )
-        rows = (num_difficulties + cols - 1) // cols if cols else 0
-        effective_button_width = self._compute_panel_button_width(cols, button_spacing)
 
-        self.buttons = []
-        for idx, (difficulty, color) in enumerate(
-            zip(self.difficulties, button_colors)
-        ):
-            row = idx // cols
-            col = idx % cols
-            row_remaining = num_difficulties - row * cols
-            row_cols = min(cols, row_remaining)
-            row_width = (
-                (row_cols * effective_button_width + (row_cols - 1) * button_spacing)
-                if row_cols > 0
-                else 0
-            )
-            row_start_x = (
-                self.panel_x
-                + InputDialogConstants.PANEL_PADDING
-                + max(0, (self.panel_inner_width - row_width) // 2)
-            )
-            x = row_start_x + col * (effective_button_width + button_spacing)
-            y = button_start_y + row * (
-                InputDialogConstants.BUTTON_HEIGHT
-                + InputDialogConstants.BUTTON_ROW_SPACING
-            )
-            button = Button(
-                x,
-                y,
-                effective_button_width,
-                InputDialogConstants.BUTTON_HEIGHT,
-                difficulty,
-                color,
-                self.small_font,
-            )
-            self.buttons.append(button)
-
-        if rows == 0:
-            buttons_bottom = button_start_y
-        else:
-            last_row_offset = (rows - 1) * (
-                InputDialogConstants.BUTTON_HEIGHT
-                + InputDialogConstants.BUTTON_ROW_SPACING
-            )
-            buttons_bottom = (
-                button_start_y + last_row_offset + InputDialogConstants.BUTTON_HEIGHT
-            )
-
-        start_y = buttons_bottom + 20
-        start_x = self.panel_x + InputDialogConstants.PANEL_PADDING
+        action_y = difficulty_bottom + 18
+        half_width = (self.panel_inner_width - spacing) // 2
+        action_x = self.panel_x + _PANEL_PADDING
+        self.copy_prompt_button = Button(
+            pygame.Rect(
+                action_x,
+                action_y,
+                half_width,
+                _BUTTON_HEIGHT,
+            ),
+            "프롬프트 복사",
+            SURFACE_SUBTLE,
+            self.fonts.body,
+            text_color=PRIMARY_DARK,
+            hover_color=SURFACE_HOVER,
+            border_color=BORDER,
+        )
+        self.paste_button = Button(
+            pygame.Rect(
+                action_x + half_width + spacing,
+                action_y,
+                half_width,
+                _BUTTON_HEIGHT,
+            ),
+            "JSON 붙여넣기",
+            SURFACE_SUBTLE,
+            self.fonts.body,
+            text_color=PRIMARY_DARK,
+            hover_color=SURFACE_HOVER,
+            border_color=BORDER,
+        )
         self.start_button = Button(
-            start_x,
-            start_y,
-            self.panel_inner_width,
-            InputDialogConstants.BUTTON_HEIGHT + 4,
+            pygame.Rect(
+                action_x,
+                action_y + _BUTTON_HEIGHT + 16,
+                self.panel_inner_width,
+                _BUTTON_HEIGHT + 4,
+            ),
             "풀이 시작",
             PRIMARY_DARK,
-            self.small_font,
+            self.fonts.body,
         )
 
-    def _compute_panel_button_width(self, cols: int, spacing: int) -> int:
-        """패널 내부에서 버튼 너비 계산"""
-        if cols <= 0:
-            return 0
-        total_spacing = (cols - 1) * spacing
-        return max(70, (self.panel_inner_width - total_spacing) // cols)
+    def _show_error(self, message: str) -> None:
+        self.validation_error = message
+        self.notice_message = None
 
-    def _get_button_colors(self, num_difficulties: int) -> List[Tuple[int, int, int]]:
-        """버튼 색상 리스트 생성"""
-        base_colors = [ACCENT, PRIMARY, ORANGE, RED, (150, 50, 150), (50, 50, 50)]
+    def _show_notice(self, message: str) -> None:
+        self.validation_error = None
+        self.notice_message = message
 
-        if num_difficulties > len(base_colors):
-            multiplier = (num_difficulties // len(base_colors)) + 1
-            base_colors = base_colors * multiplier
+    def _clear_message(self) -> None:
+        self.validation_error = None
+        self.notice_message = None
 
-        return base_colors[:num_difficulties]
+    def _replace_board(self, grid: object) -> None:
+        """Atomically replace the editable draft after structural validation."""
 
-    def draw(self):
-        """화면 그리기"""
-        self.screen.fill(WHITE)
+        normalized = validate_grid(grid)
+        self.board = [list(row) for row in normalized]
+        self.conflicting_cells = find_conflicting_cells(normalized)
+        self.selected_cell = None
+        self._clear_message()
+
+    def _set_cell(self, row: int, col: int, value: int) -> None:
+        self.board[row][col] = value
+        self.conflicting_cells = find_conflicting_cells(self.board)
+        self._clear_message()
+
+    def draw(self) -> None:
+        self.screen.fill(APP_BACKGROUND)
         self._draw_title()
         self._draw_grid()
-        self._draw_panel_background()
-        self._draw_buttons()
-        self._draw_start_button()
-        self._draw_instructions()
-        self._draw_validation_error()
+        self._draw_panel()
         pygame.display.flip()
 
-    def _draw_panel_background(self):
-        """우측 패널 배경"""
-        panel_height = SudokuBoard.SIZE * self.cell_size
-        panel_rect = pygame.Rect(
-            self.panel_x,
+    def _draw_title(self) -> None:
+        title = self.fonts.title.render("스도쿠 문제 입력", True, PRIMARY_DARK)
+        self.screen.blit(
+            title,
+            title.get_rect(center=(_DIALOG_WIDTH // 2, 40)),
+        )
+
+    def _draw_grid(self) -> None:
+        grid_rect = pygame.Rect(
+            self.grid_start_x,
             self.grid_start_y,
-            InputDialogConstants.PANEL_WIDTH,
-            panel_height,
+            self.grid_width,
+            self.grid_width,
         )
-        pygame.draw.rect(self.screen, LIGHT_GRAY, panel_rect, border_radius=10)
-        inner_rect = panel_rect.inflate(-8, -8)
-        pygame.draw.rect(self.screen, WHITE, inner_rect, border_radius=10)
-
-    def _draw_title(self):
-        """제목 그리기"""
-        title = self.bold_font.render("스도쿠 문제 입력", True, PRIMARY_DARK)
-        title_rect = title.get_rect(center=(InputDialogConstants.WIDTH // 2, 40))
-        self.screen.blit(title, title_rect)
-
-    def _draw_grid(self):
-        """그리드 그리기"""
-        self._draw_grid_lines()
-        self._draw_conflict_cells()
-        self._draw_numbers()
-        self._draw_selected_cell()
-
-    def _draw_grid_lines(self):
-        """그리드 선 그리기"""
-        draw_sudoku_grid_lines(
+        pygame.draw.rect(
             self.screen,
-            start_x=self.grid_start_x,
-            start_y=self.grid_start_y,
-            cell_size=self.cell_size,
-            thick_width=3,
-            thin_width=1,
+            LIGHT_GRAY,
+            grid_rect.move(0, 3),
+            border_radius=4,
         )
-
-    def _draw_conflict_cells(self):
-        """모순 셀 그리기"""
-        self.conflicting_cells = get_conflicting_cells(self.board)
+        pygame.draw.rect(self.screen, WHITE, grid_rect)
         draw_conflict_cells(
             self.screen,
             self.conflicting_cells,
-            start_x=self.grid_start_x,
-            start_y=self.grid_start_y,
-            cell_size=self.cell_size,
-            alpha=128,
+            (self.grid_start_x, self.grid_start_y),
+            self.cell_size,
+        )
+        if self.selected_cell is not None:
+            row, col = self.selected_cell
+            x = self.grid_start_x + col * self.cell_size
+            y = self.grid_start_y + row * self.cell_size
+            rect = pygame.Rect(x + 3, y + 3, self.cell_size - 6, self.cell_size - 6)
+            color = (
+                RED if self.selected_cell in self.conflicting_cells else ACCENT_YELLOW
+            )
+            pygame.draw.rect(self.screen, color, rect, width=3)
+            if color == ACCENT_YELLOW:
+                fill = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
+                fill.fill((*ACCENT_YELLOW_LIGHT, 60))
+                self.screen.blit(fill, rect.topleft)
+
+        draw_sudoku_grid_lines(
+            self.screen,
+            (self.grid_start_x, self.grid_start_y),
+            self.cell_size,
+        )
+        for row in range(SIZE):
+            for col in range(SIZE):
+                value = self.board[row][col]
+                if not value:
+                    continue
+                color = RED if (row, col) in self.conflicting_cells else BLACK
+                rendered = self.fonts.number.render(str(value), True, color)
+                center = (
+                    self.grid_start_x + col * self.cell_size + self.cell_size // 2,
+                    self.grid_start_y + row * self.cell_size + self.cell_size // 2,
+                )
+                self.screen.blit(rendered, rendered.get_rect(center=center))
+
+    def _draw_panel(self) -> None:
+        panel_rect = pygame.Rect(
+            self.panel_x,
+            self.grid_start_y,
+            _PANEL_WIDTH,
+            SIZE * self.cell_size,
+        )
+        pygame.draw.rect(
+            self.screen,
+            LIGHT_GRAY,
+            panel_rect.move(0, 3),
+            border_radius=14,
+        )
+        pygame.draw.rect(self.screen, WHITE, panel_rect, border_radius=14)
+        pygame.draw.rect(
+            self.screen,
+            BORDER,
+            panel_rect,
+            width=1,
+            border_radius=14,
         )
 
-    def _draw_numbers(self):
-        """숫자 그리기"""
-        for i in range(SudokuBoard.SIZE):
-            for j in range(SudokuBoard.SIZE):
-                if self.board[i][j] != 0:
-                    x = self.grid_start_x + j * self.cell_size
-                    y = self.grid_start_y + i * self.cell_size
-                    color = RED if (i, j) in self.conflicting_cells else BLACK
-                    text = self.font.render(str(self.board[i][j]), True, color)
-                    text_rect = text.get_rect(
-                        center=(x + self.cell_size // 2, y + self.cell_size // 2)
-                    )
-                    self.screen.blit(text, text_rect)
+        x = self.panel_x + _PANEL_PADDING
+        title = self.fonts.heading.render("예제 문제", True, BLACK)
+        self.screen.blit(title, (x, self.grid_start_y + 15))
 
-    def _draw_selected_cell(self):
-        """선택된 셀 하이라이트"""
-        if not self.selected_cell:
-            return
-
-        row, col = self.selected_cell
-        x = self.grid_start_x + col * self.cell_size
-        y = self.grid_start_y + row * self.cell_size
-
-        rect = pygame.Rect(x + 3, y + 3, self.cell_size - 6, self.cell_size - 6)
-        if (row, col) in self.conflicting_cells:
-            pygame.draw.rect(self.screen, RED, rect, 3)
-        else:
-            pygame.draw.rect(self.screen, ACCENT_YELLOW, rect, 3)
-            highlight_surface = pygame.Surface((self.cell_size - 6, self.cell_size - 6))
-            highlight_surface.set_alpha(60)
-            highlight_surface.fill(ACCENT_YELLOW_LIGHT)
-            self.screen.blit(highlight_surface, (x + 3, y + 3))
-
-    def _draw_buttons(self):
-        """버튼 그리기"""
         mouse_pos = pygame.mouse.get_pos()
-        for button in self.buttons:
+        for button in (
+            *self.buttons,
+            self.copy_prompt_button,
+            self.paste_button,
+            self.start_button,
+        ):
             button.update_hover(mouse_pos)
             button.draw(self.screen)
 
-    def _draw_start_button(self):
-        """풀이 시작 버튼 그리기"""
-        mouse_pos = pygame.mouse.get_pos()
-        self.start_button.update_hover(mouse_pos)
-        self.start_button.draw(self.screen)
+        self._draw_instructions()
+        self._draw_message()
 
-    def _draw_instructions(self):
-        """안내 텍스트 그리기"""
-        y_pos = self.start_button.rect.bottom + 25
-        text_x = self.panel_x + InputDialogConstants.PANEL_PADDING
-
-        sections = [
+    def _draw_instructions(self) -> None:
+        x = self.panel_x + _PANEL_PADDING
+        y = self.start_button.rect.bottom + 24
+        divider_right = self.panel_x + _PANEL_WIDTH - _PANEL_PADDING
+        pygame.draw.line(self.screen, LIGHT_GRAY, (x, y - 10), (divider_right, y - 10))
+        sections = (
             (
-                "입력",
-                [
-                    "마우스로 칸을 선택하세요",
-                    "숫자 1-9 입력, 0/Delete 삭제",
-                    "화살표 키로 이동",
-                ],
+                "직접 입력",
+                ("칸 선택 · 1~9 입력 · 0/Delete 삭제", "화살표 이동 · C/R 전체 삭제"),
             ),
             (
-                "문제 불러오기",
-                ["난이도 버튼 클릭 시 샘플 퍼즐 불러오기", "C 또는 R 키로 전체 초기화"],
+                "외부 AI/OCR",
+                ("프롬프트를 이미지와 함께 요청", "JSON 버튼 또는 Ctrl+V로 붙여넣기"),
             ),
-            (
-                "풀이 시작 / 종료",
-                ["풀이 시작 버튼 또는 Enter/S 키", "ESC 키로 창 종료"],
-            ),
-        ]
+            ("시작 / 종료", ("Enter/S로 풀이 · ESC로 종료",)),
+        )
+        for title, lines in sections:
+            self.screen.blit(self.fonts.body.render(title, True, PRIMARY_DARK), (x, y))
+            y += 23
+            for line in lines:
+                for wrapped in wrap_text(
+                    f"• {line}", self.fonts.body, self.panel_inner_width
+                ):
+                    self.screen.blit(
+                        self.fonts.body.render(wrapped, True, GRAY), (x, y)
+                    )
+                    y += 20
+            y += 10
+        self.instructions_bottom = y
 
-        for section_title, instructions in sections:
-            title_text = self.small_font.render(section_title, True, DARK_BLUE)
-            self.screen.blit(title_text, (text_x, y_pos))
-            y_pos += InputDialogConstants.SECTION_TITLE_SPACING
-
-            for instruction in instructions:
-                text = self.small_font.render(f"• {instruction}", True, GRAY)
-                self.screen.blit(text, (text_x, y_pos))
-                y_pos += InputDialogConstants.INSTRUCTION_SPACING
-
-            y_pos += InputDialogConstants.SECTION_GAP
-
-        self.instructions_bottom = y_pos
-
-    def _draw_validation_error(self):
-        """검증 에러 메시지 그리기"""
-        if not self.validation_error:
+    def _draw_message(self) -> None:
+        message = self.validation_error or self.notice_message
+        if not message:
             return
+        color = RED if self.validation_error else ACCENT
+        y = self.instructions_bottom + 4
+        center_x = self.panel_x + _PANEL_WIDTH // 2
+        for line in wrap_text(message, self.fonts.body, self.panel_inner_width - 8):
+            rendered = self.fonts.body.render(line, True, color)
+            self.screen.blit(rendered, rendered.get_rect(center=(center_x, y)))
+            y += _ERROR_MESSAGE_SPACING
 
-        anchor = max(self.instructions_bottom, self.start_button.rect.bottom)
-        y_pos = anchor + 10
-
-        error_lines = self.validation_error.split("\n")
-        for line in error_lines:
-            error_text = self.small_font.render(line, True, RED)
-            error_rect = error_text.get_rect(
-                center=(self.panel_x + InputDialogConstants.PANEL_WIDTH // 2, y_pos)
-            )
-            self.screen.blit(error_text, error_rect)
-            y_pos += InputDialogConstants.ERROR_MESSAGE_SPACING
-
-    def handle_events(self):
-        """이벤트 처리"""
-        for event in pygame.event.get():
+    def _handle_events(
+        self,
+        events: Iterable[pygame.event.Event],
+    ) -> Puzzle | None:
+        for event in events:
             if event.type == pygame.QUIT:
                 self.running = False
                 return None
-
-            elif event.type == pygame.MOUSEBUTTONDOWN:
-                if event.button == 1:
-                    result = self._handle_mouse_click(event.pos)
-                    if result is not None:
-                        return result
-
-            elif event.type == pygame.KEYDOWN:
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                result = self._handle_mouse_click(event.pos)
+                if result is not None:
+                    return result
+            if event.type == pygame.KEYDOWN:
                 result = self._handle_keydown(event)
                 if result is not None:
                     return result
-
         return None
 
-    def _handle_mouse_click(
-        self, mouse_pos: Tuple[int, int]
-    ) -> Optional[List[List[int]]]:
-        """마우스 클릭 처리"""
-        # 버튼 클릭 확인
-        for i, button in enumerate(self.buttons):
-            if button.is_clicked(mouse_pos):
-                self._load_difficulty_puzzle(i)
+    def _handle_mouse_click(self, position: tuple[int, int]) -> Puzzle | None:
+        for index, button in enumerate(self.buttons):
+            if button.is_clicked(position):
+                self._load_difficulty_puzzle(index)
                 return None
-
-        if self.start_button.is_clicked(mouse_pos):
+        if self.copy_prompt_button.is_clicked(position):
+            self._copy_ai_prompt()
+            return None
+        if self.paste_button.is_clicked(position):
+            self._paste_matrix()
+            return None
+        if self.start_button.is_clicked(position):
             return self._handle_start()
+        if self._point_in_grid(position):
+            mouse_x, mouse_y = position
+            self.selected_cell = (
+                (mouse_y - self.grid_start_y) // self.cell_size,
+                (mouse_x - self.grid_start_x) // self.cell_size,
+            )
+        return None
 
-        # 그리드 클릭 확인
-        if self._is_point_in_grid(mouse_pos):
-            self._select_cell(mouse_pos)
-
-    def _load_difficulty_puzzle(self, button_index: int):
-        """난이도별 퍼즐 불러오기"""
-        if 0 <= button_index < len(self.difficulties):
-            puzzles = get_puzzles_by_difficulty(self.difficulties[button_index])
-            if not puzzles:
-                self.validation_error = "선택한 난이도에 불러올 퍼즐이 없습니다."
-                return
-            random_puzzle = random.choice(puzzles)
-            self.board = [row[:] for row in random_puzzle]
-            self.selected_cell = None
-            self.validation_error = None
-            self.draw()
-            pygame.display.flip()
-
-    def _is_point_in_grid(self, pos: Tuple[int, int]) -> bool:
-        """포인트가 그리드 내부인지 확인"""
-        mouse_x, mouse_y = pos
-        return (
-            self.grid_start_x
-            <= mouse_x
-            < self.grid_start_x + SudokuBoard.SIZE * self.cell_size
-            and self.grid_start_y
-            <= mouse_y
-            < self.grid_start_y + SudokuBoard.SIZE * self.cell_size
-        )
-
-    def _select_cell(self, mouse_pos: Tuple[int, int]):
-        """셀 선택"""
-        mouse_x, mouse_y = mouse_pos
-        col = (mouse_x - self.grid_start_x) // self.cell_size
-        row = (mouse_y - self.grid_start_y) // self.cell_size
-        self.selected_cell = (row, col)
-
-    def _handle_keydown(self, event) -> Optional[List[List[int]]]:
-        """키 입력 처리"""
-        if self._is_start_key(event.key):
+    def _handle_keydown(self, event: pygame.event.Event) -> Puzzle | None:
+        if event.key == pygame.K_v and event.mod & pygame.KMOD_CTRL:
+            self._paste_matrix()
+            return None
+        if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_s):
             return self._handle_start()
-
         if event.key == pygame.K_ESCAPE:
             self.running = False
             return None
-
         if event.key in (pygame.K_r, pygame.K_c):
-            self._reset_board()
+            self._replace_board([[0] * SIZE for _ in range(SIZE)])
             return None
-
-        if event.key == pygame.K_l:
-            self._load_random_puzzle()
-            return None
-
-        if self.selected_cell:
+        if self.selected_cell is not None:
             self._handle_cell_input(event)
-
         return None
 
-    def _is_start_key(self, key: int) -> bool:
-        """시작 키인지 확인"""
-        return key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_s)
+    def _copy_ai_prompt(self) -> None:
+        try:
+            copy_text(OCR_MATRIX_PROMPT)
+        except ClipboardError as exc:
+            self._show_error(str(exc))
+            return
+        self._show_notice("AI/OCR용 프롬프트와 예시를 복사했습니다.")
 
-    def _handle_start(self) -> Optional[List[List[int]]]:
-        """시작 처리"""
-        board = self.get_board()
-        test_board = SudokuBoard(board)
+    def _paste_matrix(self) -> None:
+        """Read, fully parse, then atomically replace the draft board."""
 
-        if not test_board.is_valid():
-            self.validation_error = "입력된 스도쿠에 모순이 있습니다!\n(같은 행/열/박스에 중복된 숫자가 있습니다)"
-            return None
+        try:
+            text = paste_text()
+            grid = parse_matrix_json(text)
+        except (ClipboardError, MatrixParseError) as exc:
+            self._show_error(str(exc))
+            return
 
-        self.validation_error = None
-        self.draw()
-        pygame.display.flip()
-        pygame.event.clear()
-        pygame.time.wait(100)
-        self.running = False
-        return board
-
-    def _reset_board(self):
-        """보드 초기화"""
-        self.board = [[0] * SudokuBoard.SIZE for _ in range(SudokuBoard.SIZE)]
-        self.selected_cell = None
-        self.validation_error = None
-
-    def _load_random_puzzle(self):
-        """랜덤 퍼즐 불러오기"""
-        all_puzzles = get_all_puzzles()
-        if all_puzzles:
-            random_puzzle = random.choice(all_puzzles)
-            self.board = [row[:] for row in random_puzzle]
-            self.selected_cell = None
-            self.validation_error = None
-
-    def _handle_cell_input(self, event):
-        """셀 입력 처리"""
-        row, col = self.selected_cell
-
-        if event.key in (pygame.K_DELETE, pygame.K_BACKSPACE):
-            self.board[row][col] = 0
-            self.validation_error = None
-        elif pygame.K_1 <= event.key <= pygame.K_9:
-            self.board[row][col] = event.key - pygame.K_0
-            self.validation_error = None
-        elif pygame.K_KP1 <= event.key <= pygame.K_KP9:
-            self.board[row][col] = event.key - pygame.K_KP0
-            self.validation_error = None
-        elif event.key in (pygame.K_0, pygame.K_KP0):
-            self.board[row][col] = 0
-            self.validation_error = None
+        self._replace_board(grid)
+        if self.conflicting_cells:
+            self._show_error(
+                "JSON은 불러왔지만 중복 숫자가 있습니다. 빨간 칸을 원본과 대조해 수정하세요."
+            )
         else:
-            self._handle_arrow_keys(event, row, col)
+            self._show_notice("9×9 JSON을 불러왔습니다. 원본 이미지와 확인하세요.")
 
-    def _handle_arrow_keys(self, event, row: int, col: int):
-        """화살표 키 처리"""
-        if event.key == pygame.K_UP and row > 0:
+    def _handle_start(self) -> Puzzle | None:
+        if not any(value for row in self.board for value in row):
+            self._show_error("최소 한 개 이상의 초기 숫자를 입력하세요.")
+            return None
+        if self.conflicting_cells:
+            self._show_error("같은 행·열·박스에 중복된 숫자가 있습니다.")
+            return None
+        try:
+            puzzle = Puzzle(self.board)
+        except InvalidBoardError as exc:
+            self._show_error(str(exc))
+            return None
+        self._clear_message()
+        self.running = False
+        return puzzle
+
+    def _load_difficulty_puzzle(self, index: int) -> None:
+        difficulty = self.difficulties[index]
+        self._replace_board(self.puzzle_catalog[difficulty])
+        self._show_notice(f"{difficulty} 퍼즐을 불러왔습니다.")
+
+    def _point_in_grid(self, position: tuple[int, int]) -> bool:
+        x, y = position
+        return (
+            self.grid_start_x <= x < self.grid_start_x + self.grid_width
+            and self.grid_start_y <= y < self.grid_start_y + self.grid_width
+        )
+
+    def _handle_cell_input(self, event: pygame.event.Event) -> None:
+        assert self.selected_cell is not None
+        row, col = self.selected_cell
+        if event.key in (
+            pygame.K_DELETE,
+            pygame.K_BACKSPACE,
+            pygame.K_0,
+            pygame.K_KP0,
+        ):
+            self._set_cell(row, col, 0)
+        elif pygame.K_1 <= event.key <= pygame.K_9:
+            self._set_cell(row, col, event.key - pygame.K_0)
+        elif pygame.K_KP1 <= event.key <= pygame.K_KP9:
+            self._set_cell(row, col, event.key - pygame.K_KP0)
+        elif event.key == pygame.K_UP and row > 0:
             self.selected_cell = (row - 1, col)
-        elif event.key == pygame.K_DOWN and row < SudokuBoard.SIZE - 1:
+        elif event.key == pygame.K_DOWN and row < SIZE - 1:
             self.selected_cell = (row + 1, col)
         elif event.key == pygame.K_LEFT and col > 0:
             self.selected_cell = (row, col - 1)
-        elif event.key == pygame.K_RIGHT and col < SudokuBoard.SIZE - 1:
+        elif event.key == pygame.K_RIGHT and col < SIZE - 1:
             self.selected_cell = (row, col + 1)
 
-    def get_board(self):
-        """입력된 보드 반환"""
-        return self.board
-
-    def run(self):
-        """입력 다이얼로그 실행"""
-        clock = pygame.time.Clock()
-
+    def run(self) -> Puzzle | None:
+        self.draw()
         while self.running:
-            result = self.handle_events()
+            events = (pygame.event.wait(), *pygame.event.get())
+            result = self._handle_events(events)
             if result is not None:
                 return result
-
-            self.draw()
-            clock.tick(VisualizerConstants.FPS)
-
+            if self.running:
+                self.draw()
         return None

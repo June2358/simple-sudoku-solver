@@ -1,203 +1,104 @@
-"""
-스도쿠 보드 모듈
+"""Validated immutable Sudoku puzzle model."""
 
-스도쿠 보드를 표현하고 관리하는 클래스를 제공합니다.
-후보 추적, 제약 조건 전파 등의 기능을 포함합니다.
-"""
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 
-from typing import List, Optional, Set, Tuple
-from copy import deepcopy
+from .topology import CELLS, SIZE, UNITS, Cell
+
+type Grid = tuple[tuple[int, ...], ...]
 
 
-class SudokuBoard:
-    """스도쿠 판을 표현하는 클래스"""
-    
-    SIZE = 9
-    BOX_SIZE = 3
-    
-    def __init__(self, board: Optional[List[List[int]]] = None):
-        """
-        Args:
-            board: 9x9 리스트. 0은 빈 칸을 의미
-        """
-        if board is None:
-            self.board = [[0] * self.SIZE for _ in range(self.SIZE)]
-        else:
-            self.board = deepcopy(board)
-        
-        # 각 칸의 가능한 숫자 후보를 저장 (제약 조건 전파용)
-        self.candidates = [[set(range(1, 10)) for _ in range(self.SIZE)] 
-                          for _ in range(self.SIZE)]
-        self._initialize_candidates()
-    
-    def _initialize_candidates(self):
-        """이미 채워진 숫자에 따라 후보 초기화"""
-        for i in range(self.SIZE):
-            for j in range(self.SIZE):
-                if self.board[i][j] != 0:
-                    self.candidates[i][j] = {self.board[i][j]}
-                    self._remove_candidate_from_peers(i, j, self.board[i][j])
-    
-    def _remove_candidate_from_peers(self, row: int, col: int, value: int):
-        """특정 칸의 숫자가 정해지면, 같은 행/열/박스의 다른 칸에서 해당 숫자 제거"""
-        # 같은 행
-        for c in range(self.SIZE):
-            if c != col and value in self.candidates[row][c]:
-                self.candidates[row][c].discard(value)
-        
-        # 같은 열
-        for r in range(self.SIZE):
-            if r != row and value in self.candidates[r][col]:
-                self.candidates[r][col].discard(value)
-        
-        # 같은 박스
-        box_row = (row // self.BOX_SIZE) * self.BOX_SIZE
-        box_col = (col // self.BOX_SIZE) * self.BOX_SIZE
-        for r in range(box_row, box_row + self.BOX_SIZE):
-            for c in range(box_col, box_col + self.BOX_SIZE):
-                if (r != row or c != col) and value in self.candidates[r][c]:
-                    self.candidates[r][c].discard(value)
-    
-    def set_value(self, row: int, col: int, value: int) -> bool:
-        """칸에 값을 설정하고 제약 조건 전파"""
-        if not self.is_valid_move(row, col, value):
-            return False
-        
-        self.board[row][col] = value
-        self.candidates[row][col] = {value}
-        self._remove_candidate_from_peers(row, col, value)
-        return True
-    
-    def is_valid_move(self, row: int, col: int, value: int) -> bool:
-        """특정 위치에 값을 넣을 수 있는지 검증"""
-        if self.board[row][col] != 0:
-            return False
-        
-        # 같은 행 확인
-        for c in range(self.SIZE):
-            if self.board[row][c] == value:
-                return False
-        
-        # 같은 열 확인
-        for r in range(self.SIZE):
-            if self.board[r][col] == value:
-                return False
-        
-        # 같은 박스 확인
-        box_row = (row // self.BOX_SIZE) * self.BOX_SIZE
-        box_col = (col // self.BOX_SIZE) * self.BOX_SIZE
-        for r in range(box_row, box_row + self.BOX_SIZE):
-            for c in range(box_col, box_col + self.BOX_SIZE):
-                if self.board[r][c] == value:
-                    return False
-        
-        return True
-    
-    def is_complete(self) -> bool:
-        """스도쿠가 완성되었는지 확인"""
-        for i in range(self.SIZE):
-            for j in range(self.SIZE):
-                if self.board[i][j] == 0:
-                    return False
-        return self.is_valid()
-    
-    def is_valid(self) -> bool:
-        """현재 상태가 유효한 스도쿠인지 확인"""
-        # 각 행 확인
-        for i in range(self.SIZE):
-            seen = set()
-            for j in range(self.SIZE):
-                val = self.board[i][j]
-                if val != 0:
-                    if val in seen:
-                        return False
-                    seen.add(val)
-        
-        # 각 열 확인
-        for j in range(self.SIZE):
-            seen = set()
-            for i in range(self.SIZE):
-                val = self.board[i][j]
-                if val != 0:
-                    if val in seen:
-                        return False
-                    seen.add(val)
-        
-        # 각 박스 확인
-        for box_row in range(0, self.SIZE, self.BOX_SIZE):
-            for box_col in range(0, self.SIZE, self.BOX_SIZE):
-                seen = set()
-                for i in range(box_row, box_row + self.BOX_SIZE):
-                    for j in range(box_col, box_col + self.BOX_SIZE):
-                        val = self.board[i][j]
-                        if val != 0:
-                            if val in seen:
-                                return False
-                            seen.add(val)
-        
-        return True
-    
-    def get_empty_cells(self) -> List[Tuple[int, int]]:
-        """빈 칸들의 좌표 리스트 반환"""
-        return [(i, j) for i in range(self.SIZE) 
-                for j in range(self.SIZE) if self.board[i][j] == 0]
-    
-    def get_candidates(self, row: int, col: int) -> Set[int]:
-        """특정 칸의 가능한 숫자 후보 반환"""
-        return self.candidates[row][col].copy()
-    
-    def __str__(self) -> str:
-        """스도쿠 판을 보기 좋게 출력"""
-        lines = []
-        for i in range(self.SIZE):
-            if i % 3 == 0 and i > 0:
-                lines.append("------+-------+------")
-            
-            row_str = ""
-            for j in range(self.SIZE):
-                if j % 3 == 0 and j > 0:
-                    row_str += "| "
-                val = self.board[i][j]
-                row_str += str(val) if val != 0 else "."
-                row_str += " "
-            lines.append(row_str)
-        
-        return "\n".join(lines)
-    
-    def show_candidates(self, max_candidates: int = 9) -> str:
-        """각 칸의 가능한 후보들을 보기 좋게 출력"""
-        lines = []
-        for i in range(self.SIZE):
-            if i % 3 == 0 and i > 0:
-                lines.append("------+-------+------")
-            
-            row_str = ""
-            for j in range(self.SIZE):
-                if j % 3 == 0 and j > 0:
-                    row_str += "| "
-                
-                val = self.board[i][j]
-                if val != 0:
-                    # 이미 채워진 칸
-                    row_str += f" {val} "
-                else:
-                    # 후보 표시
-                    candidates = sorted(list(self.candidates[i][j]))
-                    if len(candidates) == 0:
-                        # 불가능한 상태
-                        row_str += " X "
-                    elif len(candidates) <= max_candidates:
-                        # 후보가 적으면 모두 표시 (예: 123, 45, 9)
-                        cand_str = "".join(str(c) for c in candidates)
-                        row_str += f"{cand_str:^9}"[:9]  # 최대 9자리
-                    else:
-                        # 후보가 많으면 개수만 표시
-                        row_str += f"({len(candidates)})"
-            
-            lines.append(row_str)
-        
-        return "\n".join(lines)
-    
-    def __repr__(self) -> str:
-        return f"SudokuBoard({self.board})"
+class InvalidBoardError(ValueError):
+    """Raised when a value is not a structurally valid 9x9 Sudoku grid."""
 
+
+class InvalidPuzzleError(InvalidBoardError):
+    """Raised when puzzle givens violate Sudoku constraints."""
+
+
+def validate_grid(grid: object) -> Grid:
+    """Validate and return an immutable, alias-free 9x9 grid.
+
+    Values must be exact ``int`` instances in the inclusive range 0..9.
+    ``bool`` is intentionally rejected even though it is an ``int`` subclass.
+    """
+
+    if isinstance(grid, (str, bytes)) or not isinstance(grid, Sequence):
+        raise InvalidBoardError("보드는 9개 행으로 이루어진 시퀀스여야 합니다.")
+
+    if len(grid) != SIZE:
+        raise InvalidBoardError(
+            f"보드는 정확히 {SIZE}개 행이어야 합니다: {len(grid)}개"
+        )
+
+    normalized_rows: list[tuple[int, ...]] = []
+    for row_index, row in enumerate(grid):
+        if isinstance(row, (str, bytes)) or not isinstance(row, Sequence):
+            raise InvalidBoardError(
+                f"{row_index + 1}행은 {SIZE}개 정수로 이루어진 시퀀스여야 합니다."
+            )
+        if len(row) != SIZE:
+            raise InvalidBoardError(
+                f"{row_index + 1}행은 정확히 {SIZE}개 값이어야 합니다: {len(row)}개"
+            )
+
+        normalized_row: list[int] = []
+        for col_index, value in enumerate(row):
+            if type(value) is not int:
+                raise InvalidBoardError(
+                    f"R{row_index + 1}C{col_index + 1}은 정수여야 합니다."
+                )
+            if not 0 <= value <= SIZE:
+                raise InvalidBoardError(
+                    f"R{row_index + 1}C{col_index + 1}은 0~{SIZE}여야 합니다: {value}"
+                )
+            normalized_row.append(value)
+        normalized_rows.append(tuple(normalized_row))
+
+    return tuple(normalized_rows)
+
+
+def _find_conflicts_in_valid_grid(grid: Grid) -> frozenset[Cell]:
+    conflicts: set[Cell] = set()
+    for unit in UNITS:
+        cells_by_value: dict[int, list[Cell]] = {}
+        for row, col in unit:
+            value = grid[row][col]
+            if value != 0:
+                cells_by_value.setdefault(value, []).append((row, col))
+        for cells in cells_by_value.values():
+            if len(cells) > 1:
+                conflicts.update(cells)
+    return frozenset(conflicts)
+
+
+def find_conflicting_cells(grid: object) -> frozenset[Cell]:
+    """Return every cell participating in a row, column, or box conflict."""
+
+    normalized = validate_grid(grid)
+    return _find_conflicts_in_valid_grid(normalized)
+
+
+@dataclass(frozen=True, slots=True)
+class Puzzle:
+    """An immutable set of valid Sudoku givens."""
+
+    grid: Grid
+    givens: frozenset[Cell] = field(init=False)
+
+    def __init__(self, grid: object):
+        normalized = validate_grid(grid)
+        conflicts = _find_conflicts_in_valid_grid(normalized)
+        if conflicts:
+            first_row, first_col = min(conflicts)
+            raise InvalidPuzzleError(
+                "초기 단서가 행, 열 또는 박스에서 중복됩니다: "
+                f"R{first_row + 1}C{first_col + 1}"
+            )
+
+        object.__setattr__(self, "grid", normalized)
+        object.__setattr__(
+            self,
+            "givens",
+            frozenset((row, col) for row, col in CELLS if normalized[row][col] != 0),
+        )

@@ -1,256 +1,464 @@
-"""
-스도쿠 해결 기법 모듈
+"""Pure logical deductions over one immutable solver snapshot.
 
-다양한 스도쿠 해결 기법을 구현합니다:
-- Naked/Hidden Singles
-- Locked Candidates (Pointing & Claiming)
-- Naked/Hidden Subsets (Pairs, Triples, Quads)
+Every finder receives the same grid and candidate snapshot. Placement finders
+batch every assignment justified by the same technique in that snapshot;
+assignments found in the batch are never fed back into the search.
+Elimination finders return the first pattern in a deterministic order. The
+solver is solely responsible for applying a returned delta and recording a
+state snapshot.
 """
 
-from typing import List, Tuple
+from collections.abc import Callable
 from itertools import combinations
-from .board import SudokuBoard
+from typing import Final
+
+from .board import Grid
+from .solve_types import (
+    Assignment,
+    CandidateGrid,
+    Elimination,
+    Technique,
+    TechniqueResult,
+)
+from .topology import (
+    BOX_SIZE,
+    BOXES,
+    CELLS,
+    COLS,
+    DIGITS,
+    PEERS,
+    ROWS,
+    UNITS,
+    Cell,
+    Unit,
+)
+
+type _TechniqueFinder = Callable[[Grid, CandidateGrid], TechniqueResult | None]
+
+_NAKED_SUBSET_TECHNIQUES: Final[dict[int, Technique]] = {
+    2: Technique.NAKED_PAIR,
+    3: Technique.NAKED_TRIPLE,
+}
+_HIDDEN_SUBSET_TECHNIQUES: Final[dict[int, Technique]] = {
+    2: Technique.HIDDEN_PAIR,
+    3: Technique.HIDDEN_TRIPLE,
+}
 
 
-def get_all_units(board: SudokuBoard) -> List[List[Tuple[int, int]]]:
-    """모든 유닛(행, 열, 박스)의 셀 좌표 리스트 반환"""
-    units = []
-    
-    # 행들
-    for i in range(board.SIZE):
-        units.append([(i, j) for j in range(board.SIZE)])
-    
-    # 열들
-    for j in range(board.SIZE):
-        units.append([(i, j) for i in range(board.SIZE)])
-    
-    # 박스들
-    for box_row in range(0, board.SIZE, board.BOX_SIZE):
-        for box_col in range(0, board.SIZE, board.BOX_SIZE):
-            box = []
-            for i in range(box_row, box_row + board.BOX_SIZE):
-                for j in range(box_col, box_col + board.BOX_SIZE):
-                    box.append((i, j))
-            units.append(box)
-    
-    return units
+def _cell_name(cell: Cell) -> str:
+    row, col = cell
+    return f"R{row + 1}C{col + 1}"
 
 
-def apply_naked_singles(board: SudokuBoard, steps: List[str]) -> bool:
+def _unit_name(unit_index: int) -> str:
+    if unit_index < len(ROWS):
+        return f"행 {unit_index + 1}"
+    if unit_index < len(ROWS) + len(COLS):
+        return f"열 {unit_index - len(ROWS) + 1}"
+    return f"박스 {unit_index - len(ROWS) - len(COLS) + 1}"
+
+
+def _merge_cells(*groups: tuple[Cell, ...] | Unit) -> tuple[Cell, ...]:
+    """Return cells in first-seen order without duplicates."""
+
+    return tuple(dict.fromkeys(cell for group in groups for cell in group))
+
+
+def _compatible_assignments(
+    assignments: tuple[Assignment, ...],
+) -> tuple[Assignment, ...]:
+    """Keep a deterministic compatible batch from a possibly contradictory state.
+
+    Every assignment is sound on its own. A failed one-ply branch can,
+    however, expose two forced placements that cannot coexist before the
+    solver's next contradiction check. Applying one of those placements is
+    enough to expose the contradiction, so the later conflicting placement is
+    left out instead of making batch application raise an exception. On every
+    satisfiable state this returns all assignments unchanged.
     """
-    Naked Single: 각 칸의 후보가 1개뿐이면 확정
-    한 번에 모든 Naked Single을 찾아서 처리
-    """
-    found_any = False
-    filled_cells = []
-    
-    # 먼저 모든 Naked Single 찾기
-    for i in range(board.SIZE):
-        for j in range(board.SIZE):
-            if board.board[i][j] == 0:
-                candidates = board.get_candidates(i, j)
-                if len(candidates) == 1:
-                    value = list(candidates)[0]
-                    filled_cells.append((i, j, value))
-    
-    # 찾은 모든 Naked Single을 한 번에 처리
-    for i, j, value in filled_cells:
-        if board.board[i][j] == 0:  # 아직 채워지지 않았는지 확인
-            if board.set_value(i, j, value):
-                steps.append(f"Naked Single: ({i+1},{j+1}) = {value}")
-                found_any = True
-    
-    return found_any
 
-
-def apply_hidden_singles(board: SudokuBoard, steps: List[str]) -> bool:
-    """
-    Hidden Single: 유닛(행/열/박스) 내에서 특정 숫자가 들어갈 수 있는 위치가 1개뿐이면 확정
-    한 번에 모든 Hidden Single을 찾아서 처리
-    """
-    units = get_all_units(board)
-    unit_names = []
-    # 행 이름
-    for i in range(board.SIZE):
-        unit_names.append(f"행 {i+1}")
-    # 열 이름
-    for j in range(board.SIZE):
-        unit_names.append(f"열 {j+1}")
-    # 박스 이름
-    for box_row in range(0, board.SIZE, board.BOX_SIZE):
-        for box_col in range(0, board.SIZE, board.BOX_SIZE):
-            box_num = (box_row // board.BOX_SIZE) * board.BOX_SIZE + (box_col // board.BOX_SIZE) + 1
-            unit_names.append(f"박스 {box_num}")
-    
-    found_any = False
-    filled_cells = []  # (row, col, digit, unit_name) 튜플 리스트
-    
-    # 먼저 모든 Hidden Single 찾기
-    for unit, unit_name in zip(units, unit_names):
-        for digit in range(1, 10):
-            count = 0
-            cell_position = None
-            
-            for r, c in unit:
-                if board.board[r][c] == 0 and digit in board.get_candidates(r, c):
-                    count += 1
-                    cell_position = (r, c)
-            
-            if count == 1 and cell_position:
-                r, c = cell_position
-                if board.board[r][c] == 0:  # 아직 채워지지 않았는지 확인
-                    filled_cells.append((r, c, digit, unit_name))
-    
-    # 찾은 모든 Hidden Single을 한 번에 처리
-    for r, c, digit, unit_name in filled_cells:
-        if board.board[r][c] == 0:  # 아직 채워지지 않았는지 확인 (중복 방지)
-            if board.set_value(r, c, digit):
-                steps.append(f"Hidden Single ({unit_name}): ({r+1},{c+1}) = {digit}")
-                found_any = True
-    
-    return found_any
-
-
-def apply_locked_candidates(board: SudokuBoard, steps: List[str]) -> bool:
-    """
-    Locked Candidates (Pointing & Claiming 통합)
-    """
-    progress = False
-    
-    # Type 1: Pointing (Box-to-Line)
-    for box_row in range(0, board.SIZE, board.BOX_SIZE):
-        for box_col in range(0, board.SIZE, board.BOX_SIZE):
-            for num in range(1, board.SIZE + 1):
-                positions = []
-                for i in range(box_row, box_row + board.BOX_SIZE):
-                    for j in range(box_col, box_col + board.BOX_SIZE):
-                        if board.board[i][j] == 0 and num in board.get_candidates(i, j):
-                            positions.append((i, j))
-                
-                if len(positions) >= 2:
-                    rows = set(pos[0] for pos in positions)
-                    if len(rows) == 1:
-                        row = list(rows)[0]
-                        for j in range(board.SIZE):
-                            if j < box_col or j >= box_col + board.BOX_SIZE:
-                                if num in board.candidates[row][j]:
-                                    board.candidates[row][j].discard(num)
-                                    progress = True
-                    
-                    cols = set(pos[1] for pos in positions)
-                    if len(cols) == 1:
-                        col = list(cols)[0]
-                        for i in range(board.SIZE):
-                            if i < box_row or i >= box_row + board.BOX_SIZE:
-                                if num in board.candidates[i][col]:
-                                    board.candidates[i][col].discard(num)
-                                    progress = True
-    
-    # Type 2: Claiming (Line-to-Box)
-    for i in range(board.SIZE):
-        for num in range(1, board.SIZE + 1):
-            positions = []
-            for j in range(board.SIZE):
-                if board.board[i][j] == 0 and num in board.get_candidates(i, j):
-                    positions.append((i, j))
-            
-            if len(positions) >= 2:
-                boxes = set((r // 3, c // 3) for r, c in positions)
-                if len(boxes) == 1:
-                    box_r, box_c = list(boxes)[0]
-                    for r in range(box_r * 3, box_r * 3 + 3):
-                        if r != i:
-                            for c in range(box_c * 3, box_c * 3 + 3):
-                                if num in board.candidates[r][c]:
-                                    board.candidates[r][c].discard(num)
-                                    progress = True
-    
-    for j in range(board.SIZE):
-        for num in range(1, board.SIZE + 1):
-            positions = []
-            for i in range(board.SIZE):
-                if board.board[i][j] == 0 and num in board.get_candidates(i, j):
-                    positions.append((i, j))
-            
-            if len(positions) >= 2:
-                boxes = set((r // 3, c // 3) for r, c in positions)
-                if len(boxes) == 1:
-                    box_r, box_c = list(boxes)[0]
-                    for c in range(box_c * 3, box_c * 3 + 3):
-                        if c != j:
-                            for r in range(box_r * 3, box_r * 3 + 3):
-                                if num in board.candidates[r][c]:
-                                    board.candidates[r][c].discard(num)
-                                    progress = True
-    
-    return progress
-
-
-def apply_naked_subsets(board: SudokuBoard, steps: List[str], N: int) -> bool:
-    """
-    Naked Subsets: N개의 셀이 정확히 N개의 후보 숫자의 부분 집합으로만 이루어진 경우
-    """
-    for unit in get_all_units(board):
-        empty_cells = [(r, c) for r, c in unit if board.board[r][c] == 0]
-        
-        if len(empty_cells) < N:
+    compatible: list[Assignment] = []
+    for assignment in assignments:
+        if any(
+            assignment.cell == accepted.cell
+            or (
+                assignment.value == accepted.value
+                and assignment.cell in PEERS[accepted.cell]
+            )
+            for accepted in compatible
+        ):
             continue
-        
-        for cell_combination in combinations(empty_cells, N):
-            union_candidates = set()
-            for r, c in cell_combination:
-                union_candidates.update(board.get_candidates(r, c))
-            
-            if len(union_candidates) == N:
-                for other_cell in unit:
-                    if other_cell not in cell_combination and board.board[other_cell[0]][other_cell[1]] == 0:
-                        old_size = len(board.candidates[other_cell[0]][other_cell[1]])
-                        board.candidates[other_cell[0]][other_cell[1]] -= union_candidates
-                        if len(board.candidates[other_cell[0]][other_cell[1]]) < old_size:
-                            subset_name = {2: "Pairs", 3: "Triples", 4: "Quads"}.get(N, f"{N}-tuple")
-                            steps.append(f"Naked {subset_name}: {sorted(union_candidates)} in {cell_combination}")
-                            return True
-    return False
+        compatible.append(assignment)
+    return tuple(compatible)
 
 
-def apply_hidden_subsets(board: SudokuBoard, steps: List[str], N: int) -> bool:
-    """
-    Hidden Subsets: N개의 숫자가 오직 N개의 셀에만 나타나는 경우 (역인덱싱 기반)
-    """
-    for unit in get_all_units(board):
-        # 숫자 -> 셀 리스트 매핑 (존재하는 숫자만 포함)
-        candidates_map = {}
-        for r, c in unit:
-            if board.board[r][c] == 0:
-                for digit in board.get_candidates(r, c):
-                    candidates_map.setdefault(digit, []).append((r, c))
-        
-        if len(candidates_map) < N:
-            continue
-        
-        existing_digits = list(candidates_map.keys())
-        
-        for digit_combination in combinations(existing_digits, N):
-            union_cells = set()
-            for digit in digit_combination:
-                union_cells.update(candidates_map[digit])
-            
-            if len(union_cells) != N:
+def find_naked_single(
+    grid: Grid,
+    candidates: CandidateGrid,
+) -> TechniqueResult | None:
+    """Find every Naked Single visible in one unchanged state snapshot."""
+
+    assignments = _compatible_assignments(
+        tuple(
+            Assignment((row, col), min(candidates[row][col]))
+            for row, col in CELLS
+            if grid[row][col] == 0 and len(candidates[row][col]) == 1
+        )
+    )
+    if not assignments:
+        return None
+
+    if len(assignments) == 1:
+        explanation = "표시된 칸에 가능한 후보가 하나뿐입니다."
+    else:
+        explanation = f"표시된 {len(assignments)}칸은 각각 가능한 후보가 하나뿐입니다."
+
+    return TechniqueResult(
+        technique=Technique.NAKED_SINGLE,
+        assignments=assignments,
+        evidence_cells=tuple(assignment.cell for assignment in assignments),
+        explanation=explanation,
+    )
+
+
+def find_hidden_single(
+    grid: Grid,
+    candidates: CandidateGrid,
+) -> TechniqueResult | None:
+    """Find every Hidden Single visible in one unchanged state snapshot."""
+
+    assignments_with_units: dict[Assignment, int] = {}
+    for unit_index, unit in enumerate(UNITS):
+        for value in sorted(DIGITS):
+            positions = tuple(
+                (row, col)
+                for row, col in unit
+                if grid[row][col] == 0 and value in candidates[row][col]
+            )
+            if len(positions) != 1:
                 continue
-            
-            digit_set = set(digit_combination)
-            progress = False
-            for r, c in union_cells:
-                old_candidates = board.candidates[r][c].copy()
-                new_candidates = old_candidates & digit_set
-                if new_candidates != old_candidates:
-                    board.candidates[r][c] = new_candidates
-                    progress = True
-            
-            if progress:
-                subset_name = {2: "Pairs", 3: "Triples", 4: "Quads"}.get(N, f"{N}-tuple")
-                steps.append(f"Hidden {subset_name}: {sorted(digit_combination)} in {sorted(union_cells)}")
-                return True
-    return False
+
+            cell = positions[0]
+            assignments_with_units.setdefault(Assignment(cell, value), unit_index)
+
+    if not assignments_with_units:
+        return None
+
+    assignments = _compatible_assignments(tuple(assignments_with_units))
+    if len(assignments) == 1:
+        assignment = assignments[0]
+        unit_index = assignments_with_units[assignment]
+        explanation = (
+            f"{_unit_name(unit_index)}에서 후보 {assignment.value}이 가능한 "
+            "위치가 하나뿐입니다."
+        )
+    else:
+        explanation = (
+            f"표시된 {len(assignments)}칸은 각 단위에서 "
+            "해당 숫자가 가능한 "
+            "유일한 위치입니다."
+        )
+
+    context_cells = _merge_cells(
+        *(UNITS[assignments_with_units[assignment]] for assignment in assignments)
+    )
+    return TechniqueResult(
+        technique=Technique.HIDDEN_SINGLE,
+        assignments=assignments,
+        evidence_cells=tuple(
+            dict.fromkeys(assignment.cell for assignment in assignments)
+        ),
+        context_cells=context_cells,
+        explanation=explanation,
+    )
 
 
+def find_locked_pointing(
+    grid: Grid,
+    candidates: CandidateGrid,
+) -> TechniqueResult | None:
+    """Find the first Box-to-Line locked-candidate elimination."""
+
+    for box_index, box in enumerate(BOXES):
+        box_cells = frozenset(box)
+        for value in sorted(DIGITS):
+            positions = tuple(
+                (row, col)
+                for row, col in box
+                if grid[row][col] == 0 and value in candidates[row][col]
+            )
+            if len(positions) < 2:
+                continue
+
+            rows = {row for row, _ in positions}
+            if len(rows) == 1:
+                row = min(rows)
+                targets = tuple(
+                    cell
+                    for cell in ROWS[row]
+                    if cell not in box_cells
+                    and grid[cell[0]][cell[1]] == 0
+                    and value in candidates[cell[0]][cell[1]]
+                )
+                if targets:
+                    eliminations = tuple(
+                        Elimination(cell, frozenset({value})) for cell in targets
+                    )
+                    return TechniqueResult(
+                        technique=Technique.LOCKED_POINTING,
+                        eliminations=eliminations,
+                        evidence_cells=positions,
+                        context_cells=_merge_cells(box, ROWS[row]),
+                        explanation=(
+                            f"박스 {box_index + 1}의 후보 {value}가 행 {row + 1}에 "
+                            "고정되어 있습니다."
+                        ),
+                    )
+
+            cols = {col for _, col in positions}
+            if len(cols) == 1:
+                col = min(cols)
+                targets = tuple(
+                    cell
+                    for cell in COLS[col]
+                    if cell not in box_cells
+                    and grid[cell[0]][cell[1]] == 0
+                    and value in candidates[cell[0]][cell[1]]
+                )
+                if targets:
+                    eliminations = tuple(
+                        Elimination(cell, frozenset({value})) for cell in targets
+                    )
+                    return TechniqueResult(
+                        technique=Technique.LOCKED_POINTING,
+                        eliminations=eliminations,
+                        evidence_cells=positions,
+                        context_cells=_merge_cells(box, COLS[col]),
+                        explanation=(
+                            f"박스 {box_index + 1}의 후보 {value}가 열 {col + 1}에 "
+                            "고정되어 있습니다."
+                        ),
+                    )
+    return None
+
+
+def _box_index(cell: Cell) -> int:
+    row, col = cell
+    return (row // BOX_SIZE) * BOX_SIZE + col // BOX_SIZE
+
+
+def find_locked_claiming(
+    grid: Grid,
+    candidates: CandidateGrid,
+) -> TechniqueResult | None:
+    """Find the first Line-to-Box locked-candidate elimination."""
+
+    line_groups = (("행", ROWS), ("열", COLS))
+    for line_name, lines in line_groups:
+        for line_index, line in enumerate(lines):
+            line_cells = frozenset(line)
+            for value in sorted(DIGITS):
+                positions = tuple(
+                    (row, col)
+                    for row, col in line
+                    if grid[row][col] == 0 and value in candidates[row][col]
+                )
+                if len(positions) < 2:
+                    continue
+
+                box_indices = {_box_index(cell) for cell in positions}
+                if len(box_indices) != 1:
+                    continue
+
+                box_index = min(box_indices)
+                box = BOXES[box_index]
+                targets = tuple(
+                    cell
+                    for cell in box
+                    if cell not in line_cells
+                    and grid[cell[0]][cell[1]] == 0
+                    and value in candidates[cell[0]][cell[1]]
+                )
+                if not targets:
+                    continue
+
+                eliminations = tuple(
+                    Elimination(cell, frozenset({value})) for cell in targets
+                )
+                return TechniqueResult(
+                    technique=Technique.LOCKED_CLAIMING,
+                    eliminations=eliminations,
+                    evidence_cells=positions,
+                    context_cells=_merge_cells(line, box),
+                    explanation=(
+                        f"{line_name} {line_index + 1}의 후보 {value}가 "
+                        f"박스 {box_index + 1}에 고정되어 있습니다."
+                    ),
+                )
+    return None
+
+
+def find_naked_subset(
+    grid: Grid,
+    candidates: CandidateGrid,
+    size: int,
+) -> TechniqueResult | None:
+    """Find the first Naked Pair or Triple elimination."""
+
+    try:
+        technique = _NAKED_SUBSET_TECHNIQUES[size]
+    except KeyError as exc:
+        raise ValueError("Naked subset 크기는 2 또는 3이어야 합니다.") from exc
+
+    for unit_index, unit in enumerate(UNITS):
+        eligible_cells = tuple(
+            (row, col)
+            for row, col in unit
+            if grid[row][col] == 0 and 1 <= len(candidates[row][col]) <= size
+        )
+        if len(eligible_cells) < size:
+            continue
+
+        for evidence_cells in combinations(eligible_cells, size):
+            digits = frozenset(
+                value for row, col in evidence_cells for value in candidates[row][col]
+            )
+            if len(digits) != size:
+                continue
+
+            evidence_set = frozenset(evidence_cells)
+            eliminations = tuple(
+                Elimination((row, col), candidates[row][col] & digits)
+                for row, col in unit
+                if (row, col) not in evidence_set
+                and grid[row][col] == 0
+                and candidates[row][col] & digits
+            )
+            if not eliminations:
+                continue
+
+            return TechniqueResult(
+                technique=technique,
+                eliminations=eliminations,
+                evidence_cells=tuple(evidence_cells),
+                context_cells=unit,
+                explanation=(
+                    f"{_unit_name(unit_index)}의 "
+                    f"{', '.join(_cell_name(cell) for cell in evidence_cells)}가 "
+                    f"후보 {sorted(digits)}를 독점합니다."
+                ),
+            )
+    return None
+
+
+def find_hidden_subset(
+    grid: Grid,
+    candidates: CandidateGrid,
+    size: int,
+) -> TechniqueResult | None:
+    """Find the first Hidden Pair or Triple restriction."""
+
+    try:
+        technique = _HIDDEN_SUBSET_TECHNIQUES[size]
+    except KeyError as exc:
+        raise ValueError("Hidden subset 크기는 2 또는 3이어야 합니다.") from exc
+
+    for unit_index, unit in enumerate(UNITS):
+        positions_by_digit = {
+            value: tuple(
+                (row, col)
+                for row, col in unit
+                if grid[row][col] == 0 and value in candidates[row][col]
+            )
+            for value in sorted(DIGITS)
+        }
+
+        for digits_tuple in combinations(sorted(DIGITS), size):
+            if any(not positions_by_digit[value] for value in digits_tuple):
+                continue
+
+            evidence_cells = tuple(
+                sorted(
+                    {
+                        cell
+                        for value in digits_tuple
+                        for cell in positions_by_digit[value]
+                    }
+                )
+            )
+            if len(evidence_cells) != size:
+                continue
+
+            digits = frozenset(digits_tuple)
+            eliminations = tuple(
+                Elimination((row, col), candidates[row][col] - digits)
+                for row, col in evidence_cells
+                if candidates[row][col] - digits
+            )
+            if not eliminations:
+                continue
+
+            return TechniqueResult(
+                technique=technique,
+                eliminations=eliminations,
+                evidence_cells=evidence_cells,
+                context_cells=unit,
+                explanation=(
+                    f"{_unit_name(unit_index)}에서 "
+                    f"후보 {sorted(digits)}가 표시된 {size}칸에만 존재합니다."
+                ),
+            )
+    return None
+
+
+def _find_naked_pair(
+    grid: Grid,
+    candidates: CandidateGrid,
+) -> TechniqueResult | None:
+    return find_naked_subset(grid, candidates, 2)
+
+
+def _find_hidden_pair(
+    grid: Grid,
+    candidates: CandidateGrid,
+) -> TechniqueResult | None:
+    return find_hidden_subset(grid, candidates, 2)
+
+
+def _find_naked_triple(
+    grid: Grid,
+    candidates: CandidateGrid,
+) -> TechniqueResult | None:
+    return find_naked_subset(grid, candidates, 3)
+
+
+def _find_hidden_triple(
+    grid: Grid,
+    candidates: CandidateGrid,
+) -> TechniqueResult | None:
+    return find_hidden_subset(grid, candidates, 3)
+
+
+_TECHNIQUE_FINDERS: Final[tuple[_TechniqueFinder, ...]] = (
+    find_naked_single,
+    find_hidden_single,
+    find_locked_pointing,
+    find_locked_claiming,
+    _find_naked_pair,
+    _find_hidden_pair,
+    _find_naked_triple,
+    _find_hidden_triple,
+)
+
+
+def find_next_deduction(
+    grid: Grid,
+    candidates: CandidateGrid,
+) -> TechniqueResult | None:
+    """Return the first available deduction in stable easiest-first order."""
+
+    for finder in _TECHNIQUE_FINDERS:
+        result = finder(grid, candidates)
+        if result is not None:
+            return result
+    return None

@@ -1,43 +1,47 @@
-"""
-스도쿠 GUI 앱 실행 모듈.
-
-입력 다이얼로그와 단계별 시각화 화면 사이의 흐름을 관리한다.
-"""
+"""Top-level pygame flow for editing, validating, solving, and replaying."""
 
 import pygame
 
-from . import SudokuBoard
+from .board import Grid
 from .input_dialog import SudokuInputDialog
+from .solve_types import SolveStatus
+from .solver import SudokuSolver
 from .visualizer import SudokuVisualizer
+
+_UNSOLVABLE_MESSAGE = (
+    "현재 단서로 가능한 해가 없습니다. 빨간 중복 외의 OCR 오인식도 확인하세요."
+)
 
 
 def main() -> None:
-    """앱 메인 함수"""
-    if not pygame.get_init():
-        pygame.init()
+    """Run the application until the user closes either screen."""
 
-    board_data = None
-    screen = None
+    pygame.init()
+    pygame.key.stop_text_input()
+    draft: Grid | None = None
+    input_error: str | None = None
 
-    while True:
-        input_dialog = SudokuInputDialog(initial_board=board_data, screen=screen)
-        screen = input_dialog.screen
-        board_data = input_dialog.run()
+    try:
+        while True:
+            dialog = SudokuInputDialog(
+                initial_board=draft,
+                initial_error=input_error,
+            )
+            puzzle = dialog.run()
+            if puzzle is None:
+                return
 
-        if board_data is None:
-            break
+            draft = puzzle.grid
+            result = SudokuSolver(puzzle).solve()
+            if result.status is SolveStatus.UNSOLVABLE:
+                input_error = _UNSOLVABLE_MESSAGE
+                continue
 
-        board = SudokuBoard(board_data)
-        if not board.is_valid():
-            continue
-
-        visualizer = SudokuVisualizer(board, screen=screen)
-        screen = visualizer.screen
-        result = visualizer.run()
-
-        if result is None:
-            break
-
-        board_data = result
-
-    pygame.quit()
+            input_error = None
+            visualizer = SudokuVisualizer(puzzle, result)
+            draft_for_editing = visualizer.run()
+            if draft_for_editing is None:
+                return
+            draft = draft_for_editing
+    finally:
+        pygame.quit()
