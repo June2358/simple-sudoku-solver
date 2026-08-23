@@ -17,20 +17,35 @@
 ## 요구 환경과 실행
 
 - Windows 10/11 (`win-64`)
-- Python 3.14
+- Python 3.12.2 (현재 Pygbag 브라우저 런타임과 동일)
 - pygame-ce 2.5.8
-- [Pixi](https://pixi.sh/)
+- [uv](https://docs.astral.sh/uv/)
+
+최초 환경 준비:
+
+```powershell
+uv sync
+```
 
 실행:
 
 ```powershell
-pixi run start
+uv run python -m sudoku
 ```
 
 전체 테스트와 정적 검사:
 
 ```powershell
-pixi run check
+uv run ruff check .
+uv run ruff format --check .
+uv run python -m pytest -q -W error
+```
+
+추후 Web 포팅에서 사용할 Pygbag 빌드 도구는 Desktop 런타임과 분리된
+`web` 의존성 그룹에 있습니다.
+
+```powershell
+uv sync --group web
 ```
 
 ## 문제 입력
@@ -123,9 +138,9 @@ pixi run check
 │   ├── ui_components.py        # 공용 UI 컴포넌트
 │   └── puzzles.json            # 검증된 내장 문제
 ├── tests/
-├── pixi.toml
-├── pixi.lock
-├── ruff.toml
+├── .python-version             # Pygbag과 동일한 Python 3.12.2
+├── pyproject.toml              # Desktop/Web/dev 의존성 및 Ruff 설정
+├── uv.lock                     # 재현 가능한 전체 의존성 잠금
 └── README.md
 ```
 
