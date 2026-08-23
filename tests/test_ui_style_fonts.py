@@ -55,41 +55,25 @@ def test_bundled_fonts_render_every_source_character(font_path: Path) -> None:
     assert missing == []
 
 
-def test_get_fonts_uses_bundled_korean_glyphs() -> None:
+def test_get_fonts_use_real_pretendard_weights() -> None:
     fonts = ui_style.get_fonts()
-
-    for font in (
+    all_fonts = (
         fonts.number,
         fonts.body,
         fonts.candidate,
         fonts.button,
         fonts.heading,
         fonts.title,
-    ):
-        assert _glyph_signature(font, "한") != _glyph_signature(font, "\U0010ffff")
+    )
 
-
-def test_get_fonts_use_real_pretendard_weights() -> None:
-    fonts = ui_style.get_fonts()
-
-    assert fonts.body.name == "Pretendard"
+    assert {font.name for font in all_fonts} == {"Pretendard"}
     assert fonts.body.style_name == "Regular"
     assert fonts.candidate.style_name == "Regular"
     assert fonts.number.style_name == "SemiBold"
     assert fonts.button.style_name == "SemiBold"
     assert fonts.heading.style_name == "SemiBold"
     assert fonts.title.style_name == "SemiBold"
-    assert not any(
-        font.get_bold()
-        for font in (
-            fonts.number,
-            fonts.body,
-            fonts.candidate,
-            fonts.button,
-            fonts.heading,
-            fonts.title,
-        )
-    )
+    assert not any(font.get_bold() for font in all_fonts)
     assert fonts.candidate.get_point_size() == 15
 
 

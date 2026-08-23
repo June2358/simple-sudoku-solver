@@ -19,7 +19,6 @@ def test_catalog_has_the_six_display_names() -> None:
     catalog = load_puzzle_catalog()
 
     assert tuple(catalog) == EXPECTED_DIFFICULTIES
-    assert len(catalog) == 6
 
 
 @pytest.mark.parametrize(

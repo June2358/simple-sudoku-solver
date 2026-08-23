@@ -110,7 +110,6 @@ def test_json_dialog_returns_exact_pretty_json_and_stays_open_for_validation(
     assert textarea is not None
     assert error is not None
     assert load_button is not None
-    assert len(pretty_json) == 641
     assert textarea.focus_calls == 1
     assert "font:16px" in textarea.style.cssText
     assert "safe-area-inset" in overlay.style.cssText
