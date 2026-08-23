@@ -94,7 +94,7 @@ def get_fonts() -> Fonts:
                 heading=pygame.font.Font(emphasis_path, sizes[3]),
                 title=pygame.font.Font(emphasis_path, sizes[4]),
             )
-        except OSError, pygame.error:
+        except (OSError, pygame.error):
             # The file may disappear between matching and loading.
             pass
 
