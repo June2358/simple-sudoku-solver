@@ -1,6 +1,6 @@
 # Sudoku Solver & Visualizer
 
-9×9 스도쿠를 쉬운 논리 기법과 깊이 1의 가정으로 먼저 풀고, 사람이 설명하기 어려운 지점부터는 MRV 백트래킹으로 완성하는 pygame 애플리케이션입니다. 동일한 application/core/UI 코드로 Windows Desktop과 Pygbag WebAssembly 브라우저 실행을 지원합니다.
+9×9 스도쿠를 쉬운 논리 기법과 깊이 1의 가정으로 먼저 풀고, 사람이 설명하기 어려운 지점부터는 MRV 백트래킹으로 완성하는 pygame 애플리케이션입니다. Windows에서 pygame으로 실행하거나 웹페이지에서 바로 사용할 수 있습니다.
 
 ## 주요 기능
 
@@ -14,10 +14,16 @@
 
 애플리케이션 안에는 OCR 엔진이나 외부 AI API가 들어 있지 않습니다. 이미지 인식은 사용자가 선택한 외부 도구에서 수행하고, 이 프로젝트는 그 결과 형식만 엄격하게 검증합니다.
 
-## Desktop 요구 환경과 실행
+## 실행
+
+### 홈페이지
+
+설치 없이 [웹페이지](https://june2358.github.io/simple-sudoku-solver/)에서 바로 실행할 수 있습니다.
+
+### pygame
 
 - Windows 10/11 (`win-64`)
-- Python 3.12.2 (현재 Pygbag 브라우저 런타임과 동일)
+- Python 3.12.2
 - pygame-ce 2.5.8
 - [uv](https://docs.astral.sh/uv/)
 
@@ -35,65 +41,15 @@ uv sync
 uv run python -m sudoku
 ```
 
-전체 테스트와 정적 검사:
+### 개발 검사
+
+전체 테스트와 정적 검사는 다음 명령으로 실행합니다.
 
 ```powershell
 uv run ruff check .
 uv run ruff format --check .
 uv run python -m pytest -q -W error
 ```
-
-Pygbag 빌드 도구는 Desktop 런타임과 분리된 `web` 의존성 그룹에 있습니다.
-
-```powershell
-uv sync --locked --no-dev --group web
-```
-
-## Web 빌드와 로컬 확인
-
-Web 타깃은 uv의 `web` 그룹에 고정된 Pygbag 0.9.2를 사용합니다. 빌드
-스크립트는 저장소 전체가 아니라 `main.py`와 `sudoku/`만 임시 앱 폴더에
-복사한 뒤 Pygbag을 실행합니다.
-
-```powershell
-uv run --locked --no-dev --group web python scripts/build_web.py
-```
-
-배포 가능한 정적 파일은 `build/web/`에 생성됩니다. 로컬에서 확인하려면
-빌드 후 다음 명령을 실행하고 `http://127.0.0.1:8000`을 엽니다.
-
-```powershell
-uv run python -m http.server 8000 --bind 127.0.0.1 --directory build/web
-```
-
-Pygbag의 Python/WebAssembly 런타임은 처음 접속할 때 CDN에서 내려받으므로
-첫 로딩은 이후 접속보다 느릴 수 있습니다.
-
-Web에서도 game/solver/state/renderer는 Desktop과 같은 코드를 사용합니다.
-차이는 async frame yield와 브라우저 textarea 입력처럼 플랫폼 제약이 실제로
-존재하는 경계에만 한정합니다.
-
-## GitHub Pages 배포
-
-`.github/workflows/pages.yml`은 `main` 브랜치 push 또는 수동 실행 시 다음
-순서로 Web 버전을 배포합니다.
-
-```text
-uv Web 환경 동기화
-→ Pygbag build
-→ build/web Pages artifact 업로드
-→ github-pages 환경 배포
-```
-
-워크플로는 GitHub의 공식 `configure-pages`, `upload-pages-artifact`,
-`deploy-pages` Actions와 `pages: write` / `id-token: write` 권한을 사용합니다.
-저장소 전체가 아니라 실제 Web 산출물인 `build/web/`만 artifact에 포함됩니다.
-
-처음 한 번은 저장소의 **Settings → Pages → Build and deployment → Source**를
-**GitHub Actions**로 설정해야 합니다. 이후에는 `main` 변경이 자동으로
-배포되며, Actions 화면에서 `Deploy Web to GitHub Pages`를 수동 실행할 수도
-있습니다. 일반 테스트와 lint는 기존 `CI` workflow가 담당하고 Pages
-workflow는 Web build와 배포만 담당합니다.
 
 ## 문제 입력
 
@@ -146,18 +102,15 @@ JSON만 불러옵니다. 결과는 반드시 화면에서 원본 이미지와 �
 
 형식이 잘못된 붙여넣기는 기존 입력을 바꾸지 않습니다. 형식은 맞지만 스도쿠 규칙과 충돌하는 값은 편집 화면에서 표시하며, 수정하기 전까지 풀이를 시작할 수 없습니다.
 
-## Web 범위와 제한
+## 웹페이지 범위와 제한
 
-- 첫 접속에는 Pygbag의 CPython/pygame-ce WebAssembly 런타임을 CDN에서
-  받아야 하므로 네트워크가 필요합니다. PWA/offline 설치는 현재 범위가
-  아닙니다.
+- 첫 접속에는 브라우저 실행에 필요한 파일을 받아야 하므로 네트워크가
+  필요합니다. PWA/offline 설치는 현재 범위가 아닙니다.
 - 모바일은 JSON 붙여넣기, 보드 확인, 풀이 시작, 결과 단계 이동을 우선
   지원합니다. 화면 숫자패드나 휴대폰 전용 앱 레이아웃은 제공하지 않습니다.
-- pygame canvas는 Pygbag이 viewport에 맞춰 같은 비율로 축소합니다. 세로
+- 웹 화면은 viewport에 맞춰 같은 비율로 축소됩니다. 세로
   화면에서는 보드와 pygame 버튼이 작아질 수 있지만 JSON textarea는 실제
   브라우저 입력창과 48px 이상의 버튼을 사용합니다.
-- Desktop은 pygame-ce 2.5.8을 사용하고, Web에서는 Pygbag 0.9.2가 제공하는
-  pygame-ce WebAssembly 빌드를 사용합니다.
 
 ## 풀이 정책
 
@@ -186,12 +139,12 @@ JSON만 불러옵니다. 결과는 반드시 화면에서 원본 이미지와 �
 
 ```text
 00_SUDOKU/
-├── main.py                     # Pygbag이 요구하는 얇은 공통 앱 진입점
+├── main.py                     # 공통 앱 진입점
 ├── .github/workflows/
 │   ├── ci.yml                  # Windows 자동 검사
-│   └── pages.yml               # Pygbag 빌드 및 GitHub Pages 배포
+│   └── pages.yml               # 웹페이지 빌드·게시 자동화
 ├── scripts/
-│   └── build_web.py            # 최소 런타임 staging과 Pygbag build
+│   └── build_web.py            # Pygbag 웹 산출물 생성
 ├── sudoku/
 │   ├── __main__.py             # python -m sudoku 진입점
 │   ├── app.py                  # 입력/풀이/시각화 화면 흐름
@@ -213,8 +166,8 @@ JSON만 불러옵니다. 결과는 반드시 화면에서 원본 이미지와 �
 │   ├── assets/fonts/           # 번들 한글 폰트와 OFL
 │   └── puzzles.json            # 검증된 내장 문제
 ├── tests/
-├── .python-version             # Pygbag과 동일한 Python 3.12.2
-├── pyproject.toml              # Desktop/Web/dev 의존성 및 Ruff 설정
+├── .python-version             # Python 3.12.2
+├── pyproject.toml              # 의존성 및 Ruff 설정
 ├── uv.lock                     # 재현 가능한 전체 의존성 잠금
 └── README.md
 ```
