@@ -2,7 +2,6 @@
 
 from collections.abc import Collection
 from dataclasses import dataclass
-from functools import cache
 from pathlib import Path
 
 import pygame
@@ -36,6 +35,8 @@ CANDIDATE_GRAY = (100, 116, 139)  # #64748B
 RED = (220, 38, 38)  # #DC2626
 ORANGE = (194, 65, 12)  # #C2410C
 
+_FONT_PATH = Path(__file__).parent / "assets" / "fonts" / "NanumGothic-Regular.ttf"
+
 
 @dataclass(frozen=True, slots=True)
 class Fonts:
@@ -48,62 +49,35 @@ class Fonts:
     title: pygame.font.Font
 
 
-@cache
-def _find_korean_font_paths() -> tuple[str, str] | None:
-    """Resolve an installed Korean regular/semibold pair to real files.
+def _load_bundled_font(size: int, *, bold: bool = False) -> pygame.font.Font:
+    """Load the bundled Korean font with an optional synthetic bold style."""
 
-    ``pygame.font.SysFont`` silently substitutes an unrelated fallback when a
-    family is missing.  Generic family names can also select a light face
-    (notably ``Pretendard`` on Windows), which makes the compact UI hard to
-    read.  Matching explicit face names and validating the returned path keeps
-    the result deterministic and legible.
-    """
-
-    families = (
-        ("pretendardregular", "pretendardsemibold"),
-        ("malgungothic", "malgungothic"),
-        ("notosanskrregular", "notosanskrsemibold"),
-        ("notosanscjkkr", "notosanscjkkr"),
-        ("nanumgothic", "nanumgothic"),
-    )
-    for regular_name, emphasis_name in families:
-        regular_path = pygame.font.match_font(regular_name)
-        if not regular_path or not Path(regular_path).is_file():
-            continue
-        emphasis_path = pygame.font.match_font(emphasis_name)
-        if not emphasis_path or not Path(emphasis_path).is_file():
-            emphasis_path = regular_path
-        return regular_path, emphasis_path
-    return None
+    font = pygame.font.Font(str(_FONT_PATH), size)
+    font.set_bold(bold)
+    return font
 
 
 def get_fonts() -> Fonts:
-    """Create the named font roles used by both pygame screens."""
+    """Create deterministic font roles shared by Desktop and Web."""
 
     if not pygame.font.get_init():
         pygame.font.init()
     sizes = (38, 17, 12, 19, 25)
-    paths = _find_korean_font_paths()
-    if paths is not None:
-        regular_path, emphasis_path = paths
-        try:
-            return Fonts(
-                number=pygame.font.Font(emphasis_path, sizes[0]),
-                body=pygame.font.Font(regular_path, sizes[1]),
-                candidate=pygame.font.Font(regular_path, sizes[2]),
-                heading=pygame.font.Font(emphasis_path, sizes[3]),
-                title=pygame.font.Font(emphasis_path, sizes[4]),
-            )
-        except (OSError, pygame.error):
-            # The file may disappear between matching and loading.
-            pass
-
-    number, body, candidate, heading, title = (
-        pygame.font.Font(None, size) for size in sizes
-    )
-    title.set_bold(True)
-
-    return Fonts(number, body, candidate, heading, title)
+    try:
+        return Fonts(
+            number=_load_bundled_font(sizes[0], bold=True),
+            body=_load_bundled_font(sizes[1]),
+            candidate=_load_bundled_font(sizes[2]),
+            heading=_load_bundled_font(sizes[3], bold=True),
+            title=_load_bundled_font(sizes[4], bold=True),
+        )
+    except (OSError, pygame.error):
+        # Keep the application usable if a damaged package omits the asset.
+        fallback = tuple(pygame.font.Font(None, size) for size in sizes)
+        fallback[0].set_bold(True)
+        fallback[3].set_bold(True)
+        fallback[4].set_bold(True)
+        return Fonts(*fallback)
 
 
 def configure_display(size: tuple[int, int], caption: str) -> pygame.Surface:

@@ -1,6 +1,6 @@
 # Sudoku Solver & Visualizer
 
-9×9 스도쿠를 쉬운 논리 기법과 깊이 1의 가정으로 먼저 풀고, 사람이 설명하기 어려운 지점부터는 MRV 백트래킹으로 완성하는 Windows용 pygame 애플리케이션입니다. 문제 입력과 풀이 상태, 단계 기록, 화면 표시를 분리하여 입력 검증과 결과 판정을 명확하게 다룹니다.
+9×9 스도쿠를 쉬운 논리 기법과 깊이 1의 가정으로 먼저 풀고, 사람이 설명하기 어려운 지점부터는 MRV 백트래킹으로 완성하는 pygame 애플리케이션입니다. 동일한 application/core/UI 코드로 Windows Desktop과 Pygbag WebAssembly 브라우저 실행을 지원합니다.
 
 ## 주요 기능
 
@@ -14,12 +14,14 @@
 
 애플리케이션 안에는 OCR 엔진이나 외부 AI API가 들어 있지 않습니다. 이미지 인식은 사용자가 선택한 외부 도구에서 수행하고, 이 프로젝트는 그 결과 형식만 엄격하게 검증합니다.
 
-## 요구 환경과 실행
+## Desktop 요구 환경과 실행
 
 - Windows 10/11 (`win-64`)
 - Python 3.12.2 (현재 Pygbag 브라우저 런타임과 동일)
 - pygame-ce 2.5.8
 - [uv](https://docs.astral.sh/uv/)
+
+pygame 화면은 [Google Fonts의 Nanum Gothic Regular](https://github.com/google/fonts/tree/ec626514f79f831f1ab848a82114a0ce7e2d6372/ofl/nanumgothic)를 번들하며 [SIL Open Font License 1.1](sudoku/assets/fonts/OFL.txt)을 따릅니다.
 
 최초 환경 준비:
 
@@ -41,12 +43,57 @@ uv run ruff format --check .
 uv run python -m pytest -q -W error
 ```
 
-추후 Web 포팅에서 사용할 Pygbag 빌드 도구는 Desktop 런타임과 분리된
-`web` 의존성 그룹에 있습니다.
+Pygbag 빌드 도구는 Desktop 런타임과 분리된 `web` 의존성 그룹에 있습니다.
 
 ```powershell
-uv sync --group web
+uv sync --locked --no-dev --group web
 ```
+
+## Web 빌드와 로컬 확인
+
+Web 타깃은 uv의 `web` 그룹에 고정된 Pygbag 0.9.2를 사용합니다. 빌드
+스크립트는 저장소 전체가 아니라 `main.py`와 `sudoku/`만 임시 앱 폴더에
+복사한 뒤 Pygbag을 실행합니다.
+
+```powershell
+uv run --locked --no-dev --group web python scripts/build_web.py
+```
+
+배포 가능한 정적 파일은 `build/web/`에 생성됩니다. 로컬에서 확인하려면
+빌드 후 다음 명령을 실행하고 `http://127.0.0.1:8000`을 엽니다.
+
+```powershell
+uv run python -m http.server 8000 --bind 127.0.0.1 --directory build/web
+```
+
+Pygbag의 Python/WebAssembly 런타임은 처음 접속할 때 CDN에서 내려받으므로
+첫 로딩은 이후 접속보다 느릴 수 있습니다.
+
+Web에서도 game/solver/state/renderer는 Desktop과 같은 코드를 사용합니다.
+차이는 async frame yield와 브라우저 textarea 입력처럼 플랫폼 제약이 실제로
+존재하는 경계에만 한정합니다.
+
+## GitHub Pages 배포
+
+`.github/workflows/pages.yml`은 `main` 브랜치 push 또는 수동 실행 시 다음
+순서로 Web 버전을 배포합니다.
+
+```text
+uv Web 환경 동기화
+→ Pygbag build
+→ build/web Pages artifact 업로드
+→ github-pages 환경 배포
+```
+
+워크플로는 GitHub의 공식 `configure-pages`, `upload-pages-artifact`,
+`deploy-pages` Actions와 `pages: write` / `id-token: write` 권한을 사용합니다.
+저장소 전체가 아니라 실제 Web 산출물인 `build/web/`만 artifact에 포함됩니다.
+
+처음 한 번은 저장소의 **Settings → Pages → Build and deployment → Source**를
+**GitHub Actions**로 설정해야 합니다. 이후에는 `main` 변경이 자동으로
+배포되며, Actions 화면에서 `Deploy Web to GitHub Pages`를 수동 실행할 수도
+있습니다. 일반 테스트와 lint는 기존 `CI` workflow가 담당하고 Pages
+workflow는 Web build와 배포만 담당합니다.
 
 ## 문제 입력
 
@@ -77,7 +124,14 @@ uv sync --group web
 
 ### 외부 AI OCR 결과 붙여넣기
 
-입력 화면에서 `프롬프트 복사`를 누른 뒤, 복사된 지시문과 스도쿠 이미지를 외부 비전 AI에 함께 전달합니다. AI가 반환한 JSON만 복사하여 `JSON 붙여넣기`를 누르거나 `Ctrl+V`를 사용합니다. 붙여넣은 결과는 반드시 화면에서 원본 이미지와 대조해야 합니다.
+Desktop에서는 `프롬프트 복사`와 `JSON 붙여넣기`가 운영체제 클립보드를
+사용하며 `Ctrl+V`도 지원합니다. Web에서는 `프롬프트 보기`가 선택 가능한
+read-only textarea를 열고, `JSON 입력`이 실제 HTML textarea를 엽니다.
+모바일에서는 이 입력칸을 길게 눌러 브라우저의 기본 붙여넣기를 사용합니다.
+Web 앱은 클립보드 읽기 권한을 요청하지 않습니다.
+
+프롬프트와 스도쿠 이미지를 외부 비전 AI에 함께 전달한 뒤, AI가 반환한
+JSON만 불러옵니다. 결과는 반드시 화면에서 원본 이미지와 대조해야 합니다.
 
 허용하는 형식은 다음과 같습니다.
 
@@ -91,6 +145,19 @@ uv sync --group web
 버튼을 사용하면 항상 현재 버전을 가져옵니다.
 
 형식이 잘못된 붙여넣기는 기존 입력을 바꾸지 않습니다. 형식은 맞지만 스도쿠 규칙과 충돌하는 값은 편집 화면에서 표시하며, 수정하기 전까지 풀이를 시작할 수 없습니다.
+
+## Web 범위와 제한
+
+- 첫 접속에는 Pygbag의 CPython/pygame-ce WebAssembly 런타임을 CDN에서
+  받아야 하므로 네트워크가 필요합니다. PWA/offline 설치는 현재 범위가
+  아닙니다.
+- 모바일은 JSON 붙여넣기, 보드 확인, 풀이 시작, 결과 단계 이동을 우선
+  지원합니다. 화면 숫자패드나 휴대폰 전용 앱 레이아웃은 제공하지 않습니다.
+- pygame canvas는 Pygbag이 viewport에 맞춰 같은 비율로 축소합니다. 세로
+  화면에서는 보드와 pygame 버튼이 작아질 수 있지만 JSON textarea는 실제
+  브라우저 입력창과 48px 이상의 버튼을 사용합니다.
+- Desktop은 pygame-ce 2.5.8을 사용하고, Web에서는 Pygbag 0.9.2가 제공하는
+  pygame-ce WebAssembly 빌드를 사용합니다.
 
 ## 풀이 정책
 
@@ -119,7 +186,12 @@ uv sync --group web
 
 ```text
 00_SUDOKU/
-├── .github/workflows/ci.yml    # Windows 자동 검사
+├── main.py                     # Pygbag이 요구하는 얇은 공통 앱 진입점
+├── .github/workflows/
+│   ├── ci.yml                  # Windows 자동 검사
+│   └── pages.yml               # Pygbag 빌드 및 GitHub Pages 배포
+├── scripts/
+│   └── build_web.py            # 최소 런타임 staging과 Pygbag build
 ├── sudoku/
 │   ├── __main__.py             # python -m sudoku 진입점
 │   ├── app.py                  # 입력/풀이/시각화 화면 흐름
@@ -132,10 +204,13 @@ uv sync --group web
 │   ├── input_dialog.py         # 직접 입력 및 JSON 붙여넣기
 │   ├── matrix_input.py         # 외부 AI 프롬프트와 클립보드 처리
 │   ├── matrix_parser.py        # OCR JSON 행렬 형식 검증
+│   ├── web_text_dialog.py      # Web 전용 일회성 DOM textarea
+│   ├── runtime.py              # 공통 frame pacing과 browser yield
 │   ├── puzzle_catalog.py       # 내장 프리셋 로딩과 검증
 │   ├── visualizer.py           # 기록된 단계 시각화
 │   ├── ui_style.py             # 공용 색상·폰트·그리기
 │   ├── ui_components.py        # 공용 UI 컴포넌트
+│   ├── assets/fonts/           # 번들 한글 폰트와 OFL
 │   └── puzzles.json            # 검증된 내장 문제
 ├── tests/
 ├── .python-version             # Pygbag과 동일한 Python 3.12.2

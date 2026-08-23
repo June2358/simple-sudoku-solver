@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import Iterator
 
 import pytest
@@ -48,12 +49,13 @@ def test_unsolvable_result_returns_to_editor_with_specific_message(
     dialog_results: Iterator[Puzzle | None] = iter((puzzle, None))
     dialog_calls: list[dict[str, object]] = []
     visualizer_calls: list[object] = []
+    quit_calls: list[None] = []
 
     class FakeDialog:
         def __init__(self, **kwargs: object) -> None:
             dialog_calls.append(kwargs)
 
-        def run(self) -> Puzzle | None:
+        async def run(self) -> Puzzle | None:
             return next(dialog_results)
 
     class FakeSolver:
@@ -72,14 +74,15 @@ def test_unsolvable_result_returns_to_editor_with_specific_message(
     monkeypatch.setattr(app_module, "SudokuVisualizer", ForbiddenVisualizer)
     monkeypatch.setattr(app_module.pygame, "init", lambda: None)
     monkeypatch.setattr(app_module.pygame.key, "stop_text_input", lambda: None)
-    monkeypatch.setattr(app_module.pygame, "quit", lambda: None)
+    monkeypatch.setattr(app_module.pygame, "quit", lambda: quit_calls.append(None))
 
-    app_module.main()
+    asyncio.run(app_module.main())
 
     assert len(dialog_calls) == 2
     assert "가능한 해가 없습니다" in str(dialog_calls[1]["initial_error"])
     assert dialog_calls[1]["initial_board"] == puzzle.grid
     assert not visualizer_calls
+    assert quit_calls == [None]
 
 
 def test_solved_result_opens_visualizer_and_edit_returns_same_draft(
@@ -89,12 +92,13 @@ def test_solved_result_opens_visualizer_and_edit_returns_same_draft(
     dialog_results: Iterator[Puzzle | None] = iter((puzzle, None))
     dialog_calls: list[dict[str, object]] = []
     visualizer_calls: list[tuple[object, ...]] = []
+    quit_calls: list[None] = []
 
     class FakeDialog:
         def __init__(self, **kwargs: object) -> None:
             dialog_calls.append(kwargs)
 
-        def run(self) -> Puzzle | None:
+        async def run(self) -> Puzzle | None:
             return next(dialog_results)
 
     solved_result = result_with_status(puzzle, SolveStatus.SOLVED_MULTIPLE)
@@ -110,7 +114,7 @@ def test_solved_result_opens_visualizer_and_edit_returns_same_draft(
         def __init__(self, *args: object, **kwargs: object) -> None:
             visualizer_calls.append(args)
 
-        def run(self):
+        async def run(self):
             return puzzle.grid
 
     monkeypatch.setattr(app_module, "SudokuInputDialog", FakeDialog)
@@ -118,11 +122,35 @@ def test_solved_result_opens_visualizer_and_edit_returns_same_draft(
     monkeypatch.setattr(app_module, "SudokuVisualizer", FakeVisualizer)
     monkeypatch.setattr(app_module.pygame, "init", lambda: None)
     monkeypatch.setattr(app_module.pygame.key, "stop_text_input", lambda: None)
-    monkeypatch.setattr(app_module.pygame, "quit", lambda: None)
+    monkeypatch.setattr(app_module.pygame, "quit", lambda: quit_calls.append(None))
 
-    app_module.main()
+    asyncio.run(app_module.main())
 
     assert len(visualizer_calls) == 1
     assert visualizer_calls[0] == (puzzle, solved_result)
     assert dialog_calls[1]["initial_board"] == puzzle.grid
     assert dialog_calls[1]["initial_error"] is None
+    assert quit_calls == [None]
+
+
+def test_pygame_quits_when_async_screen_flow_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    quit_calls: list[None] = []
+
+    class FailingDialog:
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+        async def run(self) -> Puzzle | None:
+            raise RuntimeError("screen failed")
+
+    monkeypatch.setattr(app_module, "SudokuInputDialog", FailingDialog)
+    monkeypatch.setattr(app_module.pygame, "init", lambda: None)
+    monkeypatch.setattr(app_module.pygame.key, "stop_text_input", lambda: None)
+    monkeypatch.setattr(app_module.pygame, "quit", lambda: quit_calls.append(None))
+
+    with pytest.raises(RuntimeError, match="screen failed"):
+        asyncio.run(app_module.main())
+
+    assert quit_calls == [None]

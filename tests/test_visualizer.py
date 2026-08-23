@@ -1,3 +1,5 @@
+import asyncio
+
 import pygame
 import pytest
 from sample_puzzles import UNIQUE_GRID
@@ -90,23 +92,28 @@ def test_home_end_and_autoplay_navigation(
     assert visualizer.current_step_index == 1
 
 
-def test_run_draws_once_then_waits_for_a_quit_event(
+def test_run_yields_a_frame_then_handles_a_quit_event(
     solved_case: tuple[Puzzle, SolveResult],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     visualizer = SudokuVisualizer(*solved_case)
     draw_calls: list[None] = []
-    wait_calls: list[tuple[object, ...]] = []
+    frame_calls: list[pygame.time.Clock] = []
 
     monkeypatch.setattr(visualizer, "draw", lambda: draw_calls.append(None))
 
-    def wait_for_quit(*args: object) -> pygame.event.Event:
-        wait_calls.append(args)
-        return pygame.event.Event(pygame.QUIT)
+    async def advance_frame(clock: pygame.time.Clock) -> float:
+        frame_calls.append(clock)
+        await asyncio.sleep(0)
+        return 1 / 60
 
-    monkeypatch.setattr(pygame.event, "wait", wait_for_quit)
-    monkeypatch.setattr(pygame.event, "get", lambda: [])
+    monkeypatch.setattr("sudoku.visualizer.next_frame", advance_frame)
+    monkeypatch.setattr(
+        pygame.event,
+        "get",
+        lambda: [pygame.event.Event(pygame.QUIT)],
+    )
 
-    assert visualizer.run() is None
+    assert asyncio.run(visualizer.run()) is None
     assert draw_calls == [None]
-    assert wait_calls == [()]
+    assert len(frame_calls) == 1

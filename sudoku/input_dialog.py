@@ -1,6 +1,6 @@
 """Editable Sudoku input screen, including strict external-AI JSON paste."""
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 
 import pygame
 
@@ -18,6 +18,7 @@ from .matrix_input import (
 )
 from .matrix_parser import MatrixParseError, parse_matrix_json
 from .puzzle_catalog import load_puzzle_catalog
+from .runtime import next_frame
 from .topology import SIZE, Cell
 from .ui_components import Button
 from .ui_style import (
@@ -39,6 +40,13 @@ from .ui_style import (
     draw_sudoku_grid_lines,
     get_fonts,
     wrap_text,
+)
+from .web_text_dialog import (
+    WebTextDialog,
+    WebTextDialogError,
+    is_web_runtime,
+    open_json_dialog,
+    open_prompt_dialog,
 )
 
 _CELL_SIZE = 60
@@ -97,6 +105,7 @@ class SudokuInputDialog:
         self.validation_error = initial_error
         self.notice_message: str | None = None
         self.conflicting_cells = find_conflicting_cells(self.board)
+        self._web_text_dialog: WebTextDialog | None = None
 
     def _init_buttons(self) -> None:
         self.puzzle_catalog = load_puzzle_catalog()
@@ -138,6 +147,8 @@ class SudokuInputDialog:
         action_y = difficulty_bottom + 18
         half_width = (self.panel_inner_width - spacing) // 2
         action_x = self.panel_x + _PANEL_PADDING
+        prompt_label = "프롬프트 보기" if is_web_runtime() else "프롬프트 복사"
+        json_label = "JSON 입력" if is_web_runtime() else "JSON 붙여넣기"
         self.copy_prompt_button = Button(
             pygame.Rect(
                 action_x,
@@ -145,7 +156,7 @@ class SudokuInputDialog:
                 half_width,
                 _BUTTON_HEIGHT,
             ),
-            "프롬프트 복사",
+            prompt_label,
             SURFACE_SUBTLE,
             self.fonts.body,
             text_color=PRIMARY_DARK,
@@ -159,7 +170,7 @@ class SudokuInputDialog:
                 half_width,
                 _BUTTON_HEIGHT,
             ),
-            "JSON 붙여넣기",
+            json_label,
             SURFACE_SUBTLE,
             self.fonts.body,
             text_color=PRIMARY_DARK,
@@ -314,6 +325,11 @@ class SudokuInputDialog:
         y = self.start_button.rect.bottom + 24
         divider_right = self.panel_x + _PANEL_WIDTH - _PANEL_PADDING
         pygame.draw.line(self.screen, LIGHT_GRAY, (x, y - 10), (divider_right, y - 10))
+        ai_instructions = (
+            ("프롬프트를 열어 직접 선택·복사", "JSON 입력 창에 직접 붙여넣기")
+            if is_web_runtime()
+            else ("프롬프트를 이미지와 함께 요청", "JSON 버튼 또는 Ctrl+V로 붙여넣기")
+        )
         sections = (
             (
                 "직접 입력",
@@ -321,7 +337,7 @@ class SudokuInputDialog:
             ),
             (
                 "외부 AI/OCR",
-                ("프롬프트를 이미지와 함께 요청", "JSON 버튼 또는 Ctrl+V로 붙여넣기"),
+                ai_instructions,
             ),
             ("시작 / 종료", ("Enter/S로 풀이 · ESC로 종료",)),
         )
@@ -375,10 +391,10 @@ class SudokuInputDialog:
                 self._load_difficulty_puzzle(index)
                 return None
         if self.copy_prompt_button.is_clicked(position):
-            self._copy_ai_prompt()
+            self._handle_prompt_action()
             return None
         if self.paste_button.is_clicked(position):
-            self._paste_matrix()
+            self._handle_json_action()
             return None
         if self.start_button.is_clicked(position):
             return self._handle_start()
@@ -392,7 +408,7 @@ class SudokuInputDialog:
 
     def _handle_keydown(self, event: pygame.event.Event) -> Puzzle | None:
         if event.key == pygame.K_v and event.mod & pygame.KMOD_CTRL:
-            self._paste_matrix()
+            self._handle_json_action()
             return None
         if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_s):
             return self._handle_start()
@@ -406,6 +422,12 @@ class SudokuInputDialog:
             self._handle_cell_input(event)
         return None
 
+    def _handle_prompt_action(self) -> None:
+        if is_web_runtime():
+            self._open_web_dialog(lambda: open_prompt_dialog(OCR_MATRIX_PROMPT))
+            return
+        self._copy_ai_prompt()
+
     def _copy_ai_prompt(self) -> None:
         try:
             copy_text(OCR_MATRIX_PROMPT)
@@ -414,16 +436,25 @@ class SudokuInputDialog:
             return
         self._show_notice("AI/OCR용 프롬프트와 예시를 복사했습니다.")
 
+    def _handle_json_action(self) -> None:
+        if is_web_runtime():
+            self._open_web_dialog(open_json_dialog)
+            return
+        self._paste_matrix()
+
     def _paste_matrix(self) -> None:
         """Read, fully parse, then atomically replace the draft board."""
 
         try:
             text = paste_text()
-            grid = parse_matrix_json(text)
+            self._load_matrix_text(text)
         except (ClipboardError, MatrixParseError) as exc:
             self._show_error(str(exc))
-            return
 
+    def _load_matrix_text(self, text: str) -> None:
+        """Parse first, then atomically replace the draft with validated JSON."""
+
+        grid = parse_matrix_json(text)
         self._replace_board(grid)
         if self.conflicting_cells:
             self._show_error(
@@ -431,6 +462,52 @@ class SudokuInputDialog:
             )
         else:
             self._show_notice("9×9 JSON을 불러왔습니다. 원본 이미지와 확인하세요.")
+
+    def _open_web_dialog(self, factory: Callable[[], WebTextDialog]) -> None:
+        if self._web_text_dialog is not None:
+            return
+        try:
+            self._web_text_dialog = factory()
+        except WebTextDialogError as exc:
+            self._show_error(str(exc))
+
+    def _poll_web_text_dialog(self) -> bool:
+        dialog = self._web_text_dialog
+        if dialog is None:
+            return False
+        try:
+            result = dialog.poll()
+            if result is None:
+                return False
+            if not result.submitted:
+                self._web_text_dialog = None
+                return True
+            try:
+                self._load_matrix_text(result.text)
+            except MatrixParseError as exc:
+                dialog.show_error(str(exc))
+                return False
+            dialog.close()
+            self._web_text_dialog = None
+            return True
+        except WebTextDialogError as exc:
+            try:
+                dialog.close()
+            except WebTextDialogError as close_exc:
+                exc = WebTextDialogError(f"{exc} {close_exc}")
+            self._web_text_dialog = None
+            self._show_error(str(exc))
+            return True
+
+    def _close_web_text_dialog(self) -> None:
+        dialog = self._web_text_dialog
+        self._web_text_dialog = None
+        if dialog is None:
+            return
+        try:
+            dialog.close()
+        except WebTextDialogError as exc:
+            self._show_error(str(exc))
 
     def _handle_start(self) -> Puzzle | None:
         if not any(value for row in self.board for value in row):
@@ -483,13 +560,22 @@ class SudokuInputDialog:
         elif event.key == pygame.K_RIGHT and col < SIZE - 1:
             self.selected_cell = (row, col + 1)
 
-    def run(self) -> Puzzle | None:
+    async def run(self) -> Puzzle | None:
+        clock = pygame.time.Clock()
         self.draw()
-        while self.running:
-            events = (pygame.event.wait(), *pygame.event.get())
-            result = self._handle_events(events)
-            if result is not None:
-                return result
-            if self.running:
-                self.draw()
-        return None
+        try:
+            while self.running:
+                await next_frame(clock)
+                modal_was_open = self._web_text_dialog is not None
+                dialog_changed = self._poll_web_text_dialog()
+                events = pygame.event.get()
+                if modal_was_open:
+                    events = [event for event in events if event.type == pygame.QUIT]
+                result = self._handle_events(events)
+                if result is not None:
+                    return result
+                if self.running and (events or dialog_changed):
+                    self.draw()
+            return None
+        finally:
+            self._close_web_text_dialog()

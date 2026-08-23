@@ -5,6 +5,7 @@ from collections.abc import Iterable
 import pygame
 
 from .board import Grid, Puzzle
+from .runtime import next_frame
 from .solve_types import (
     SolveResult,
     SolveStatus,
@@ -69,7 +70,6 @@ _MARGIN = 50
 _PANEL_WIDTH = 300
 _PANEL_X_OFFSET = 10
 _AUTOPLAY_INTERVAL = 0.9
-_TIMER_POLL_MS = 16
 
 type _NavigationSource = tuple[str, int]
 
@@ -636,22 +636,15 @@ class SudokuVisualizer:
             self.autoplay_enabled = False
         return True
 
-    def run(self) -> Grid | None:
+    async def run(self) -> Grid | None:
         clock = pygame.time.Clock()
         self.draw()
         while self.running:
+            elapsed = await next_frame(clock)
             timers_were_active = (
                 self.autoplay_enabled or self._active_navigation_source is not None
             )
-            first_event = (
-                pygame.event.wait(_TIMER_POLL_MS)
-                if timers_were_active
-                else pygame.event.wait()
-            )
-            elapsed = clock.tick() / 1000.0
-            events = (
-                () if first_event.type == pygame.NOEVENT else (first_event,)
-            ) + tuple(pygame.event.get())
+            events = pygame.event.get()
 
             action = self._handle_events(events)
             if action == "edit":

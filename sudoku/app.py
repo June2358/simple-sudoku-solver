@@ -13,7 +13,7 @@ _UNSOLVABLE_MESSAGE = (
 )
 
 
-def main() -> None:
+async def main() -> None:
     """Run the application until the user closes either screen."""
 
     pygame.init()
@@ -27,7 +27,7 @@ def main() -> None:
                 initial_board=draft,
                 initial_error=input_error,
             )
-            puzzle = dialog.run()
+            puzzle = await dialog.run()
             if puzzle is None:
                 return
 
@@ -39,7 +39,7 @@ def main() -> None:
 
             input_error = None
             visualizer = SudokuVisualizer(puzzle, result)
-            draft_for_editing = visualizer.run()
+            draft_for_editing = await visualizer.run()
             if draft_for_editing is None:
                 return
             draft = draft_for_editing
