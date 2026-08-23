@@ -21,7 +21,7 @@
 - pygame-ce 2.5.8
 - [uv](https://docs.astral.sh/uv/)
 
-pygame 화면은 [Google Fonts의 Nanum Gothic Regular](https://github.com/google/fonts/tree/ec626514f79f831f1ab848a82114a0ce7e2d6372/ofl/nanumgothic)를 번들하며 [SIL Open Font License 1.1](sudoku/assets/fonts/OFL.txt)을 따릅니다.
+pygame 화면은 [Pretendard v1.3.9](https://github.com/orioncactus/pretendard/releases/tag/v1.3.9)의 Regular와 SemiBold를 번들하며 [SIL Open Font License 1.1](sudoku/assets/fonts/OFL-Pretendard.txt)을 따릅니다. Desktop과 Web 모두 같은 실제 weight 파일을 사용합니다.
 
 최초 환경 준비:
 

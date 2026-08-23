@@ -35,7 +35,9 @@ CANDIDATE_GRAY = (100, 116, 139)  # #64748B
 RED = (220, 38, 38)  # #DC2626
 ORANGE = (194, 65, 12)  # #C2410C
 
-_FONT_PATH = Path(__file__).parent / "assets" / "fonts" / "NanumGothic-Regular.ttf"
+_FONT_DIR = Path(__file__).parent / "assets" / "fonts"
+_REGULAR_FONT_PATH = _FONT_DIR / "Pretendard-Regular.otf"
+_SEMIBOLD_FONT_PATH = _FONT_DIR / "Pretendard-SemiBold.otf"
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,16 +47,15 @@ class Fonts:
     number: pygame.font.Font
     body: pygame.font.Font
     candidate: pygame.font.Font
+    button: pygame.font.Font
     heading: pygame.font.Font
     title: pygame.font.Font
 
 
-def _load_bundled_font(size: int, *, bold: bool = False) -> pygame.font.Font:
-    """Load the bundled Korean font with an optional synthetic bold style."""
+def _load_bundled_font(path: Path, size: int) -> pygame.font.Font:
+    """Load one exact bundled Pretendard weight."""
 
-    font = pygame.font.Font(str(_FONT_PATH), size)
-    font.set_bold(bold)
-    return font
+    return pygame.font.Font(str(path), size)
 
 
 def get_fonts() -> Fonts:
@@ -62,22 +63,14 @@ def get_fonts() -> Fonts:
 
     if not pygame.font.get_init():
         pygame.font.init()
-    sizes = (38, 17, 12, 19, 25)
-    try:
-        return Fonts(
-            number=_load_bundled_font(sizes[0], bold=True),
-            body=_load_bundled_font(sizes[1]),
-            candidate=_load_bundled_font(sizes[2]),
-            heading=_load_bundled_font(sizes[3], bold=True),
-            title=_load_bundled_font(sizes[4], bold=True),
-        )
-    except (OSError, pygame.error):
-        # Keep the application usable if a damaged package omits the asset.
-        fallback = tuple(pygame.font.Font(None, size) for size in sizes)
-        fallback[0].set_bold(True)
-        fallback[3].set_bold(True)
-        fallback[4].set_bold(True)
-        return Fonts(*fallback)
+    return Fonts(
+        number=_load_bundled_font(_SEMIBOLD_FONT_PATH, 38),
+        body=_load_bundled_font(_REGULAR_FONT_PATH, 17),
+        candidate=_load_bundled_font(_REGULAR_FONT_PATH, 15),
+        button=_load_bundled_font(_SEMIBOLD_FONT_PATH, 17),
+        heading=_load_bundled_font(_SEMIBOLD_FONT_PATH, 19),
+        title=_load_bundled_font(_SEMIBOLD_FONT_PATH, 25),
+    )
 
 
 def configure_display(size: tuple[int, int], caption: str) -> pygame.Surface:

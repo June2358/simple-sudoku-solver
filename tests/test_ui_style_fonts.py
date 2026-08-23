@@ -36,11 +36,15 @@ def _source_characters() -> tuple[str, ...]:
     )
 
 
-def test_bundled_font_renders_every_source_character() -> None:
+@pytest.mark.parametrize(
+    "font_path",
+    (ui_style._REGULAR_FONT_PATH, ui_style._SEMIBOLD_FONT_PATH),
+)
+def test_bundled_fonts_render_every_source_character(font_path: Path) -> None:
     pygame.font.init()
-    assert ui_style._FONT_PATH.is_file()
+    assert font_path.is_file()
 
-    font = pygame.font.Font(str(ui_style._FONT_PATH), 20)
+    font = pygame.font.Font(str(font_path), 20)
     missing_glyph = _glyph_signature(font, "\U0010ffff")
     missing = [
         character
@@ -58,19 +62,42 @@ def test_get_fonts_uses_bundled_korean_glyphs() -> None:
         fonts.number,
         fonts.body,
         fonts.candidate,
+        fonts.button,
         fonts.heading,
         fonts.title,
     ):
         assert _glyph_signature(font, "한") != _glyph_signature(font, "\U0010ffff")
 
 
-def test_get_fonts_survives_a_missing_asset(
+def test_get_fonts_use_real_pretendard_weights() -> None:
+    fonts = ui_style.get_fonts()
+
+    assert fonts.body.name == "Pretendard"
+    assert fonts.body.style_name == "Regular"
+    assert fonts.candidate.style_name == "Regular"
+    assert fonts.number.style_name == "SemiBold"
+    assert fonts.button.style_name == "SemiBold"
+    assert fonts.heading.style_name == "SemiBold"
+    assert fonts.title.style_name == "SemiBold"
+    assert not any(
+        font.get_bold()
+        for font in (
+            fonts.number,
+            fonts.body,
+            fonts.candidate,
+            fonts.button,
+            fonts.heading,
+            fonts.title,
+        )
+    )
+    assert fonts.candidate.get_point_size() == 15
+
+
+def test_get_fonts_fails_when_a_bundled_asset_is_missing(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    monkeypatch.setattr(ui_style, "_FONT_PATH", tmp_path / "missing.ttf")
+    monkeypatch.setattr(ui_style, "_REGULAR_FONT_PATH", tmp_path / "missing.otf")
 
-    fonts = ui_style.get_fonts()
-
-    assert fonts.body.get_height() > 0
-    assert fonts.title.get_bold()
+    with pytest.raises((FileNotFoundError, pygame.error)):
+        ui_style.get_fonts()

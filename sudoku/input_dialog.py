@@ -131,7 +131,7 @@ class SudokuInputDialog:
                     ),
                     difficulty,
                     SURFACE_SUBTLE,
-                    self.fonts.body,
+                    self.fonts.button,
                     text_color=BLACK,
                     hover_color=SURFACE_HOVER,
                     border_color=BORDER,
@@ -158,7 +158,7 @@ class SudokuInputDialog:
             ),
             prompt_label,
             SURFACE_SUBTLE,
-            self.fonts.body,
+            self.fonts.button,
             text_color=PRIMARY_DARK,
             hover_color=SURFACE_HOVER,
             border_color=BORDER,
@@ -172,7 +172,7 @@ class SudokuInputDialog:
             ),
             json_label,
             SURFACE_SUBTLE,
-            self.fonts.body,
+            self.fonts.button,
             text_color=PRIMARY_DARK,
             hover_color=SURFACE_HOVER,
             border_color=BORDER,
@@ -186,7 +186,7 @@ class SudokuInputDialog:
             ),
             "풀이 시작",
             PRIMARY_DARK,
-            self.fonts.body,
+            self.fonts.button,
         )
 
     def _show_error(self, message: str) -> None:
@@ -342,7 +342,9 @@ class SudokuInputDialog:
             ("시작 / 종료", ("Enter/S로 풀이 · ESC로 종료",)),
         )
         for title, lines in sections:
-            self.screen.blit(self.fonts.body.render(title, True, PRIMARY_DARK), (x, y))
+            self.screen.blit(
+                self.fonts.button.render(title, True, PRIMARY_DARK), (x, y)
+            )
             y += 23
             for line in lines:
                 for wrapped in wrap_text(

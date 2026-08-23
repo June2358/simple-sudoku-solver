@@ -192,25 +192,25 @@ class SudokuVisualizer:
             pygame.Rect(inner_x, controls_y, third, 38),
             "이전",
             PRIMARY,
-            self.fonts.body,
+            self.fonts.button,
         )
         self.play_button = Button(
             pygame.Rect(inner_x + third + gap, controls_y, third, 38),
             "재생",
             ACCENT,
-            self.fonts.body,
+            self.fonts.button,
         )
         self.next_button = Button(
             pygame.Rect(inner_x + (third + gap) * 2, controls_y, third, 38),
             "다음",
             PRIMARY,
-            self.fonts.body,
+            self.fonts.button,
         )
         self.edit_button = Button(
             pygame.Rect(inner_x, controls_y + 50, inner_width, 38),
             "입력 화면으로 돌아가기",
             PRIMARY_DARK,
-            self.fonts.body,
+            self.fonts.button,
         )
 
     def draw(self) -> None:
@@ -382,7 +382,7 @@ class SudokuVisualizer:
             y = self._draw_wrapped(label, x, y, color=ACCENT)
         if step.depth:
             self.screen.blit(
-                self.fonts.body.render("한 단계 가정 중", True, ORANGE),
+                self.fonts.button.render("한 단계 가정 중", True, ORANGE),
                 (x, y),
             )
             y += 25
@@ -405,7 +405,9 @@ class SudokuVisualizer:
 
         if step.depth and step.assumption is not None:
             y += 10
-            self.screen.blit(self.fonts.body.render("활성 가정", True, ORANGE), (x, y))
+            self.screen.blit(
+                self.fonts.button.render("활성 가정", True, ORANGE), (x, y)
+            )
             y += 22
             row, col = step.assumption.cell
             text = f"R{row + 1}C{col + 1} = {step.assumption.value}"
@@ -448,7 +450,7 @@ class SudokuVisualizer:
     def _draw_detail_field(self, label: str, text: str, x: int, y: int) -> int:
         """Draw one labeled prose field."""
 
-        self.screen.blit(self.fonts.body.render(label, True, PRIMARY), (x, y))
+        self.screen.blit(self.fonts.button.render(label, True, PRIMARY), (x, y))
         y += 22
         return self._draw_wrapped(text, x, y, color=GRAY)
 
@@ -461,7 +463,7 @@ class SudokuVisualizer:
     ) -> int:
         """Draw changed cells compactly while keeping every item intact."""
 
-        self.screen.blit(self.fonts.body.render(label, True, PRIMARY), (x, y))
+        self.screen.blit(self.fonts.button.render(label, True, PRIMARY), (x, y))
         y += 22
         max_width = self.panel_width - _PANEL_X_OFFSET - 32
         for line in _pack_effect_items(items, self.fonts.body, max_width):
