@@ -26,9 +26,9 @@ def test_catalog_has_the_six_display_names() -> None:
     [
         ("쉬움", Technique.NAKED_SINGLE, None),
         ("보통", Technique.LOCKED_PAIR, None),
-        ("어려움", Technique.NAKED_PAIR, None),
+        ("어려움", Technique.HIDDEN_TRIPLE, None),
         ("전문가", Technique.REFUTATION, StepKind.REFUTATION),
-        ("마스터", None, StepKind.ASSUMPTION_SOLVED),
+        ("마스터", Technique.REFUTATION, StepKind.REFUTATION),
         ("극한", None, StepKind.SEARCH_FALLBACK),
     ],
 )
@@ -61,3 +61,20 @@ def test_builtin_puzzle_keeps_its_advertised_trace_role(
     if difficulty in {"쉬움", "보통", "어려움"}:
         assert StepKind.ASSUMPTION not in kinds
         assert StepKind.SEARCH_FALLBACK not in kinds
+    if difficulty == "전문가":
+        assert sum(step.kind is StepKind.REFUTATION for step in result.steps) == 1
+        assert StepKind.SEARCH_FALLBACK not in kinds
+    if difficulty == "마스터":
+        assert sum(step.kind is StepKind.REFUTATION for step in result.steps) >= 2
+        assert StepKind.SEARCH_FALLBACK not in kinds
+    if difficulty == "극한":
+        assumption_count = sum(
+            step.kind is StepKind.ASSUMPTION for step in result.steps
+        )
+        assert assumption_count > 0
+        assert assumption_count == sum(
+            step.kind is StepKind.ASSUMPTION_STALLED for step in result.steps
+        )
+        assert StepKind.REFUTATION not in kinds
+        assert StepKind.ASSUMPTION_SOLVED not in kinds
+        assert max(step.depth for step in result.steps) == 1

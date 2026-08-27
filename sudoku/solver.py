@@ -1,6 +1,6 @@
 """Human-style Sudoku reasoning with a complete-search safety net."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Final
 
@@ -20,7 +20,7 @@ from .solve_types import (
 )
 from .solver_state import SolverState
 from .techniques import find_next_deduction
-from .topology import COLS, ROWS, Cell
+from .topology import COLS, PEERS, ROWS, UNITS, Cell
 
 _SOLUTION_LIMIT: Final = 2
 type _StateSnapshot = tuple[Grid, CandidateGrid]
@@ -38,8 +38,78 @@ class _ProbeResult:
     solution: _StateSnapshot | None = None
 
 
+@dataclass(slots=True)
+class _ProbeHistory:
+    """Remember stalled assumptions only while one solve is in progress."""
+
+    stalled: dict[Assignment, tuple[int, int]] = field(default_factory=dict)
+    next_serial: int = 0
+
+    def refresh_scores(self, scored: tuple[tuple[Assignment, int], ...]) -> None:
+        for decision, h1 in scored:
+            previous = self.stalled.get(decision)
+            if previous is not None and previous[0] != h1:
+                del self.stalled[decision]
+
+    def priority(self, decision: Assignment, h1: int) -> tuple[int, int]:
+        previous = self.stalled.get(decision)
+        if previous is None:
+            return 0, 0
+        if previous[0] != h1:
+            raise RuntimeError("갱신되지 않은 H1 점수 이력입니다.")
+        return 1, previous[1]
+
+    def remember_stall(self, decision: Assignment, h1: int) -> None:
+        self.stalled[decision] = h1, self.next_serial
+        self.next_serial += 1
+
+
+def _direct_h1(
+    grid: Grid,
+    candidates: CandidateGrid,
+    decision: Assignment,
+) -> int:
+    """Count constraints made single by applying one assumption directly."""
+
+    cell = decision.cell
+    value = decision.value
+    row, col = cell
+    if grid[row][col] != 0 or value not in candidates[row][col]:
+        raise RuntimeError("현재 후보가 아닌 값을 H1 점수로 계산할 수 없습니다.")
+
+    affected_peers = {
+        peer
+        for peer in PEERS[cell]
+        if grid[peer[0]][peer[1]] == 0 and value in candidates[peer[0]][peer[1]]
+    }
+    h1 = sum(len(candidates[peer[0]][peer[1]]) == 2 for peer in affected_peers)
+
+    other_values = candidates[row][col] - {value}
+    for unit in UNITS:
+        if cell in unit:
+            for other_value in other_values:
+                before = sum(
+                    grid[unit_row][unit_col] == 0
+                    and other_value in candidates[unit_row][unit_col]
+                    for unit_row, unit_col in unit
+                )
+                h1 += int(before == 2)
+            continue
+
+        removed = sum(peer in affected_peers for peer in unit)
+        if not removed:
+            continue
+        before = sum(
+            grid[unit_row][unit_col] == 0 and value in candidates[unit_row][unit_col]
+            for unit_row, unit_col in unit
+        )
+        h1 += int(before > 1 and before - removed == 1)
+
+    return h1
+
+
 class SudokuSolver:
-    """Explain simple logic and one-ply refutations, then find up to two solutions."""
+    """Explain logic and bivalue one-ply refutations, then find up to two solutions."""
 
     __slots__ = ("_puzzle",)
 
@@ -52,13 +122,15 @@ class SudokuSolver:
         """Solve the puzzle and distinguish zero, one, or multiple solutions.
 
         The visible trace permits at most one active assumption. At a logical
-        fixed point, every two-candidate cell is visited in row-major order and
-        its candidates are tried independently in ascending order. A
-        contradictory candidate is removed and normal logic resumes. A
-        completed branch supplies a valid representative solution; the later
-        silent search still checks whether another solution exists. If every
-        branch stalls, recursive MRV search runs silently and the trace marks
-        the exact point where the human-readable explanation ended.
+        fixed point, candidates from every two-candidate cell are ranked by the
+        number of constraints made single by applying them directly. Equal
+        scores rotate previously stalled assumptions behind fresh ones, then
+        fall back to row-major cell and ascending value order. A contradictory
+        candidate is removed and normal logic resumes. A completed branch
+        supplies a valid representative solution; the later silent search
+        still checks whether another solution exists. If every branch stalls,
+        recursive MRV search runs silently and the trace marks the exact point
+        where the human-readable explanation ended.
         """
 
         steps: list[SolveStep] = []
@@ -84,7 +156,7 @@ class SudokuSolver:
                     StepKind.SEARCH_FALLBACK,
                     state,
                     message=(
-                        "2후보 셀의 한 단계 가정으로는 더 설명하기 어려워, "
+                        "2후보 셀이 없거나 모든 2후보 가정이 정체되어, "
                         "여기부터는 MRV 백트래킹으로 전환합니다."
                     ),
                 )
@@ -138,13 +210,18 @@ class SudokuSolver:
     ) -> _StateSnapshot | None:
         """Run fixed-point logic and sequential, non-nested bivalue probes."""
 
+        probe_history = _ProbeHistory()
         while True:
             if not self._propagate_logic(state, assumption=None, steps=steps):
                 return None
             if state.is_complete():
                 return self._snapshot(state)
 
-            probe_result = self._probe_bivalue_candidates(state, steps)
+            probe_result = self._probe_bivalue_candidates(
+                state,
+                steps,
+                probe_history,
+            )
             if probe_result.outcome is _ProbeOutcome.SOLVED:
                 if probe_result.solution is None:
                     raise RuntimeError("완성된 가정 결과에 해가 없습니다.")
@@ -156,21 +233,42 @@ class SudokuSolver:
         self,
         state: SolverState,
         steps: list[SolveStep],
+        history: _ProbeHistory,
     ) -> _ProbeResult:
-        """Try each current bivalue candidate until one is decisive."""
+        """Try every current bivalue assumption in H1 order until one is decisive."""
 
+        grid = state.to_grid()
+        candidates = state.candidate_grid()
         bivalue_cells = tuple(
-            cell for cell in state.empty_cells() if len(state.candidates_at(cell)) == 2
+            cell
+            for cell in state.empty_cells()
+            if len(candidates[cell[0]][cell[1]]) == 2
         )
-        for cell in bivalue_cells:
-            for value in sorted(state.candidates_at(cell)):
-                result = self._probe_candidate(
-                    state,
-                    Assignment(cell, value),
-                    steps,
-                )
-                if result.outcome is not _ProbeOutcome.STALLED:
-                    return result
+        scored = tuple(
+            (decision, _direct_h1(grid, candidates, decision))
+            for cell in bivalue_cells
+            for decision in (
+                Assignment(cell, value)
+                for value in sorted(candidates[cell[0]][cell[1]])
+            )
+        )
+        history.refresh_scores(scored)
+        ordered = sorted(
+            scored,
+            key=lambda item: (
+                -item[1],
+                *history.priority(*item),
+                item[0].cell,
+                item[0].value,
+            ),
+        )
+
+        for decision, h1 in ordered:
+            result = self._probe_candidate(state, decision, steps)
+            if result.outcome is _ProbeOutcome.STALLED:
+                history.remember_stall(decision, h1)
+                continue
+            return result
         return _ProbeResult(_ProbeOutcome.STALLED)
 
     def _probe_candidate(

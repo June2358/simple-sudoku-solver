@@ -5,10 +5,7 @@ from sudoku.solve_types import SolveStatus, StepKind
 from sudoku.solver import SudokuSolver
 
 REFUTATION_THEN_SOLUTION = (
-    "48.3............71.2.......7.5....6....2..8.............1.76...3.....4......5...."
-)
-ALL_BRANCHES_STALL = (
-    "078100000400030000003500007090000100700801005006000020600002900000050006000009350"
+    "800400057250000640097300800000070406000905000904060000008001720019000085530007004"
 )
 
 
@@ -26,17 +23,6 @@ def test_refutation_removes_the_proven_candidate() -> None:
     row, col = refutation.assumption.cell
     assert refutation.assumption.value not in refutation.candidates[row][col]
     assert StepKind.SEARCH_FALLBACK not in {step.kind for step in result.steps}
-
-
-def test_all_stalled_assumptions_trigger_search_fallback() -> None:
-    result = SudokuSolver(Puzzle(grid_from_string(ALL_BRANCHES_STALL))).solve()
-    kinds = [step.kind for step in result.steps]
-    assert kinds.count(StepKind.ASSUMPTION) == kinds.count(StepKind.ASSUMPTION_STALLED)
-    assert StepKind.ASSUMPTION in kinds
-    assert StepKind.REFUTATION not in kinds
-    assert StepKind.SEARCH_FALLBACK in kinds
-    assert kinds[-1] is StepKind.SOLVED
-    assert max(step.depth for step in result.steps) == 1
 
 
 def test_assumption_solution_is_still_checked_for_a_second_solution() -> None:
