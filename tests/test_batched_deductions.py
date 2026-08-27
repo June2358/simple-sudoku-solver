@@ -5,9 +5,9 @@ from sudoku.solve_types import CandidateGrid, Technique
 from sudoku.solver_state import SolverState
 from sudoku.techniques import (
     find_hidden_single,
-    find_hidden_subset,
+    find_hidden_triple,
     find_naked_single,
-    find_naked_subset,
+    find_naked_triple,
 )
 from sudoku.topology import CELLS, DIGITS, SIZE, Cell
 
@@ -71,18 +71,18 @@ def test_naked_triple_eliminates_its_digits_from_the_rest_of_the_unit() -> None:
     snapshot = synthetic_snapshot(
         {
             (0, 0): frozenset({1, 2}),
-            (0, 1): frozenset({1, 3}),
-            (0, 2): frozenset({2, 3}),
+            (0, 3): frozenset({1, 3}),
+            (0, 6): frozenset({2, 3}),
         }
     )
 
-    result = find_naked_subset(*snapshot, 3)
+    result = find_naked_triple(*snapshot)
 
     assert result is not None
     assert result.technique is Technique.NAKED_TRIPLE
-    assert result.evidence_cells == ((0, 0), (0, 1), (0, 2))
+    assert result.evidence_cells == ((0, 0), (0, 3), (0, 6))
     assert any(
-        elimination.cell == (0, 3) and elimination.values == frozenset({1, 2, 3})
+        elimination.cell == (0, 1) and elimination.values == frozenset({1, 2, 3})
         for elimination in result.eliminations
     )
 
@@ -100,7 +100,7 @@ def test_hidden_triple_removes_other_candidates_from_its_cells() -> None:
         }
     )
 
-    result = find_hidden_subset(*synthetic_snapshot(overrides), 3)
+    result = find_hidden_triple(*synthetic_snapshot(overrides))
 
     assert result is not None
     assert result.technique is Technique.HIDDEN_TRIPLE

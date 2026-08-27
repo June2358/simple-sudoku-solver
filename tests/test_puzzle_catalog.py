@@ -25,7 +25,7 @@ def test_catalog_has_the_six_display_names() -> None:
     ("difficulty", "required_technique", "required_kind"),
     [
         ("쉬움", Technique.NAKED_SINGLE, None),
-        ("보통", Technique.LOCKED_POINTING, None),
+        ("보통", Technique.LOCKED_PAIR, None),
         ("어려움", Technique.NAKED_PAIR, None),
         ("전문가", Technique.REFUTATION, StepKind.REFUTATION),
         ("마스터", None, StepKind.ASSUMPTION_SOLVED),
@@ -53,7 +53,11 @@ def test_builtin_puzzle_keeps_its_advertised_trace_role(
     if required_kind is not None:
         assert required_kind in kinds
     if difficulty == "쉬움":
-        assert techniques <= {Technique.NAKED_SINGLE, Technique.HIDDEN_SINGLE}
+        assert techniques <= {
+            Technique.FULL_HOUSE,
+            Technique.NAKED_SINGLE,
+            Technique.HIDDEN_SINGLE,
+        }
     if difficulty in {"쉬움", "보통", "어려움"}:
         assert StepKind.ASSUMPTION not in kinds
         assert StepKind.SEARCH_FALLBACK not in kinds

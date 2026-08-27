@@ -49,15 +49,18 @@ _STEP_LABELS: dict[StepKind, str] = {
 }
 
 _TECHNIQUE_LABELS: dict[Technique, str] = {
-    Technique.REFUTATION: "귀류법",
+    Technique.FULL_HOUSE: "Full House",
     Technique.NAKED_SINGLE: "Naked Single",
     Technique.HIDDEN_SINGLE: "Hidden Single",
-    Technique.LOCKED_POINTING: "Locked Candidates (Pointing)",
-    Technique.LOCKED_CLAIMING: "Locked Candidates (Claiming)",
+    Technique.LOCKED_PAIR: "Locked Pair",
     Technique.NAKED_PAIR: "Naked Pair",
-    Technique.HIDDEN_PAIR: "Hidden Pair",
+    Technique.LOCKED_CANDIDATES_POINTING: "Locked Candidates — Pointing",
+    Technique.LOCKED_CANDIDATES_CLAIMING: "Locked Candidates — Claiming",
+    Technique.LOCKED_TRIPLE: "Locked Triple",
     Technique.NAKED_TRIPLE: "Naked Triple",
+    Technique.HIDDEN_PAIR: "Hidden Pair",
     Technique.HIDDEN_TRIPLE: "Hidden Triple",
+    Technique.REFUTATION: "귀류법",
 }
 
 # Navigation repeats are driven by frame time instead of pygame's OS-dependent
@@ -137,6 +140,21 @@ def _deduction_reason(step: SolveStep) -> str:
     if deduction is None:
         return step.message
     return deduction.explanation or step.message
+
+
+def _technique_label(step: SolveStep) -> str:
+    """Return the technique label, including the final Full House special case."""
+
+    deduction = step.deduction
+    if deduction is None:
+        raise ValueError("논리 기법 라벨에는 deduction이 필요합니다.")
+    if (
+        deduction.technique is Technique.FULL_HOUSE
+        and len(deduction.assignments) == 1
+        and all(value != 0 for row in step.grid for value in row)
+    ):
+        return "Last Digit"
+    return _TECHNIQUE_LABELS[deduction.technique]
 
 
 class SudokuVisualizer:
@@ -378,7 +396,7 @@ class SudokuVisualizer:
         self.screen.blit(self.fonts.heading.render(kind_label, True, PRIMARY), (x, y))
         y += 28
         if step.deduction is not None:
-            label = _TECHNIQUE_LABELS[step.deduction.technique]
+            label = _technique_label(step)
             y = self._draw_wrapped(label, x, y, color=ACCENT)
         if step.depth:
             self.screen.blit(

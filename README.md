@@ -69,9 +69,9 @@ uv run python -m pytest -q -W error
 
 | 프리셋 | 실제 풀이 경로 |
 |---|---|
-| 쉬움 | Naked / Hidden Single만 사용 |
-| 보통 | Locked Candidates까지 사용 |
-| 어려움 | Naked / Hidden Pair·Triple까지 사용 |
+| 쉬움 | Full House와 Naked / Hidden Single만 사용 |
+| 보통 | Locked Pair까지 사용 |
+| 어려움 | Naked Pair까지 사용 |
 | 전문가 | 2후보 가정의 모순으로 후보를 제거한 뒤 완성 |
 | 마스터 | 2후보 가정에서 추가 가정 없이 해를 완성 |
 | 극한 | 허용된 모든 2택이 정체되어 MRV 탐색으로 전환 |
@@ -116,7 +116,7 @@ JSON만 불러옵니다. 결과는 반드시 화면에서 원본 이미지와 �
 
 솔버가 사용자에게 보여 주는 풀이 경로는 다음 순서를 따릅니다.
 
-1. Naked/Hidden Single, Locked Candidates, Naked/Hidden Pair/Triple을 쉬운 순서로 고정점까지 적용합니다. Single 단계는 시작 시점의 후보 상태를 고정하고, 같은 기법으로 이미 확정 가능한 모든 칸을 한꺼번에 채웁니다. 그 배치로 새롭게 확정 가능해진 칸은 다음 단계에서 처리합니다.
+1. `Full House → Naked Single → Hidden Single → Locked Pair → Naked Pair → Locked Candidates — Pointing → Locked Candidates — Claiming → Locked Triple → Naked Triple → Hidden Pair → Hidden Triple` 순서로 기본 기법을 고정점까지 적용합니다. Full House와 Single 단계는 시작 시점의 후보 상태를 고정하고, 같은 기법으로 이미 확정 가능한 모든 칸을 한꺼번에 채웁니다. 그 배치로 새롭게 확정 가능해진 칸은 다음 단계에서 처리합니다. 전체 보드의 마지막 Full House는 `Last Digit`으로 표시합니다.
 2. 정체되면 후보가 정확히 2개인 모든 셀을 행 우선 순서로 찾습니다.
 3. 각 셀의 후보를 오름차순으로 서로 독립적으로 한 번만 가정하고, 추가 가정 없이 기존 논리를 계속 적용합니다.
 4. 모순이 나온 후보만 원래 상태에서 제거한 뒤 1번부터 다시 시작합니다. 현재 셀의 양쪽이 모두 정체되면 다음 2후보 셀로 이동합니다.

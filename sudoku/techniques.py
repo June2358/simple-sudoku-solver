@@ -8,7 +8,7 @@ solver is solely responsible for applying a returned delta and recording a
 state snapshot.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from itertools import combinations
 from typing import Final
 
@@ -34,15 +34,7 @@ from .topology import (
 )
 
 type _TechniqueFinder = Callable[[Grid, CandidateGrid], TechniqueResult | None]
-
-_NAKED_SUBSET_TECHNIQUES: Final[dict[int, Technique]] = {
-    2: Technique.NAKED_PAIR,
-    3: Technique.NAKED_TRIPLE,
-}
-_HIDDEN_SUBSET_TECHNIQUES: Final[dict[int, Technique]] = {
-    2: Technique.HIDDEN_PAIR,
-    3: Technique.HIDDEN_TRIPLE,
-}
+type _NakedSubsetPattern = tuple[tuple[Cell, ...], frozenset[int]]
 
 
 def _cell_name(cell: Cell) -> str:
@@ -90,6 +82,59 @@ def _compatible_assignments(
             continue
         compatible.append(assignment)
     return tuple(compatible)
+
+
+def find_full_house(
+    grid: Grid,
+    candidates: CandidateGrid,
+) -> TechniqueResult | None:
+    """Find every house whose final empty cell is visible in one snapshot."""
+
+    assignments_with_units: dict[Assignment, int] = {}
+    for unit_index, unit in enumerate(UNITS):
+        empty_cells = tuple((row, col) for row, col in unit if grid[row][col] == 0)
+        if len(empty_cells) != 1:
+            continue
+
+        placed_values = {grid[row][col] for row, col in unit if grid[row][col] != 0}
+        missing_values = DIGITS - placed_values
+        if len(missing_values) != 1:
+            continue
+
+        cell = empty_cells[0]
+        value = min(missing_values)
+        if value not in candidates[cell[0]][cell[1]]:
+            continue
+        assignments_with_units.setdefault(Assignment(cell, value), unit_index)
+
+    if not assignments_with_units:
+        return None
+
+    assignments = _compatible_assignments(tuple(assignments_with_units))
+    if len(assignments) == 1:
+        assignment = assignments[0]
+        unit_index = assignments_with_units[assignment]
+        explanation = (
+            f"{_unit_name(unit_index)}에 빈칸이 하나뿐이며 "
+            f"빠진 숫자는 {assignment.value}입니다."
+        )
+    else:
+        explanation = (
+            f"표시된 {len(assignments)}칸은 각각 해당 단위의 마지막 빈칸입니다."
+        )
+
+    context_cells = _merge_cells(
+        *(UNITS[assignments_with_units[assignment]] for assignment in assignments)
+    )
+    return TechniqueResult(
+        technique=Technique.FULL_HOUSE,
+        assignments=assignments,
+        evidence_cells=tuple(
+            dict.fromkeys(assignment.cell for assignment in assignments)
+        ),
+        context_cells=context_cells,
+        explanation=explanation,
+    )
 
 
 def find_naked_single(
@@ -173,7 +218,7 @@ def find_hidden_single(
     )
 
 
-def find_locked_pointing(
+def find_locked_candidates_pointing(
     grid: Grid,
     candidates: CandidateGrid,
 ) -> TechniqueResult | None:
@@ -205,7 +250,7 @@ def find_locked_pointing(
                         Elimination(cell, frozenset({value})) for cell in targets
                     )
                     return TechniqueResult(
-                        technique=Technique.LOCKED_POINTING,
+                        technique=Technique.LOCKED_CANDIDATES_POINTING,
                         eliminations=eliminations,
                         evidence_cells=positions,
                         context_cells=_merge_cells(box, ROWS[row]),
@@ -230,7 +275,7 @@ def find_locked_pointing(
                         Elimination(cell, frozenset({value})) for cell in targets
                     )
                     return TechniqueResult(
-                        technique=Technique.LOCKED_POINTING,
+                        technique=Technique.LOCKED_CANDIDATES_POINTING,
                         eliminations=eliminations,
                         evidence_cells=positions,
                         context_cells=_merge_cells(box, COLS[col]),
@@ -247,7 +292,7 @@ def _box_index(cell: Cell) -> int:
     return (row // BOX_SIZE) * BOX_SIZE + col // BOX_SIZE
 
 
-def find_locked_claiming(
+def find_locked_candidates_claiming(
     grid: Grid,
     candidates: CandidateGrid,
 ) -> TechniqueResult | None:
@@ -286,7 +331,7 @@ def find_locked_claiming(
                     Elimination(cell, frozenset({value})) for cell in targets
                 )
                 return TechniqueResult(
-                    technique=Technique.LOCKED_CLAIMING,
+                    technique=Technique.LOCKED_CANDIDATES_CLAIMING,
                     eliminations=eliminations,
                     evidence_cells=positions,
                     context_cells=_merge_cells(line, box),
@@ -298,32 +343,104 @@ def find_locked_claiming(
     return None
 
 
-def find_naked_subset(
+def _iter_naked_subsets_in_unit(
     grid: Grid,
     candidates: CandidateGrid,
+    unit: Unit,
     size: int,
-) -> TechniqueResult | None:
-    """Find the first Naked Pair or Triple elimination."""
+) -> Iterator[_NakedSubsetPattern]:
+    """Yield Naked Subset patterns in one unit's stable cell order."""
 
-    try:
-        technique = _NAKED_SUBSET_TECHNIQUES[size]
-    except KeyError as exc:
-        raise ValueError("Naked subset 크기는 2 또는 3이어야 합니다.") from exc
+    eligible_cells = tuple(
+        (row, col)
+        for row, col in unit
+        if grid[row][col] == 0 and 2 <= len(candidates[row][col]) <= size
+    )
+    for evidence_cells in combinations(eligible_cells, size):
+        digits = frozenset(
+            value for row, col in evidence_cells for value in candidates[row][col]
+        )
+        if len(digits) == size:
+            yield tuple(evidence_cells), digits
+
+
+def _locked_box_index(evidence_cells: tuple[Cell, ...]) -> int | None:
+    """Return the shared box when evidence is confined to a line-box crossing."""
+
+    box_indices = {_box_index(cell) for cell in evidence_cells}
+    if len(box_indices) != 1:
+        return None
+    rows = {row for row, _ in evidence_cells}
+    cols = {col for _, col in evidence_cells}
+    return min(box_indices) if len(rows) == 1 or len(cols) == 1 else None
+
+
+def _find_locked_naked_subset(
+    grid: Grid,
+    candidates: CandidateGrid,
+    *,
+    size: int,
+    technique: Technique,
+) -> TechniqueResult | None:
+    """Find a Naked Subset confined to one line-box intersection."""
+
+    line_groups = (("행", ROWS), ("열", COLS))
+    for line_name, lines in line_groups:
+        for line_index, line in enumerate(lines):
+            for evidence_cells, digits in _iter_naked_subsets_in_unit(
+                grid,
+                candidates,
+                line,
+                size,
+            ):
+                box_index = _locked_box_index(evidence_cells)
+                if box_index is None:
+                    continue
+
+                box = BOXES[box_index]
+                evidence_set = frozenset(evidence_cells)
+                context_cells = _merge_cells(line, box)
+                eliminations = tuple(
+                    Elimination(cell, candidates[cell[0]][cell[1]] & digits)
+                    for cell in context_cells
+                    if cell not in evidence_set
+                    and grid[cell[0]][cell[1]] == 0
+                    and candidates[cell[0]][cell[1]] & digits
+                )
+                if not eliminations:
+                    continue
+
+                return TechniqueResult(
+                    technique=technique,
+                    eliminations=eliminations,
+                    evidence_cells=evidence_cells,
+                    context_cells=context_cells,
+                    explanation=(
+                        f"{', '.join(_cell_name(cell) for cell in evidence_cells)}가 "
+                        f"{line_name} {line_index + 1}과 박스 {box_index + 1}에서 "
+                        f"후보 {sorted(digits)}를 독점합니다."
+                    ),
+                )
+    return None
+
+
+def _find_naked_subset(
+    grid: Grid,
+    candidates: CandidateGrid,
+    *,
+    size: int,
+    technique: Technique,
+) -> TechniqueResult | None:
+    """Find the first ordinary Naked Subset elimination of one size."""
 
     for unit_index, unit in enumerate(UNITS):
-        eligible_cells = tuple(
-            (row, col)
-            for row, col in unit
-            if grid[row][col] == 0 and 1 <= len(candidates[row][col]) <= size
-        )
-        if len(eligible_cells) < size:
-            continue
-
-        for evidence_cells in combinations(eligible_cells, size):
-            digits = frozenset(
-                value for row, col in evidence_cells for value in candidates[row][col]
-            )
-            if len(digits) != size:
+        for evidence_cells, digits in _iter_naked_subsets_in_unit(
+            grid,
+            candidates,
+            unit,
+            size,
+        ):
+            if _locked_box_index(evidence_cells) is not None:
                 continue
 
             evidence_set = frozenset(evidence_cells)
@@ -340,7 +457,7 @@ def find_naked_subset(
             return TechniqueResult(
                 technique=technique,
                 eliminations=eliminations,
-                evidence_cells=tuple(evidence_cells),
+                evidence_cells=evidence_cells,
                 context_cells=unit,
                 explanation=(
                     f"{_unit_name(unit_index)}의 "
@@ -351,17 +468,14 @@ def find_naked_subset(
     return None
 
 
-def find_hidden_subset(
+def _find_hidden_subset(
     grid: Grid,
     candidates: CandidateGrid,
+    *,
     size: int,
+    technique: Technique,
 ) -> TechniqueResult | None:
-    """Find the first Hidden Pair or Triple restriction."""
-
-    try:
-        technique = _HIDDEN_SUBSET_TECHNIQUES[size]
-    except KeyError as exc:
-        raise ValueError("Hidden subset 크기는 2 또는 3이어야 합니다.") from exc
+    """Find the first Hidden Subset restriction of one size."""
 
     for unit_index, unit in enumerate(UNITS):
         positions_by_digit = {
@@ -411,43 +525,102 @@ def find_hidden_subset(
     return None
 
 
-def _find_naked_pair(
+def find_locked_pair(
     grid: Grid,
     candidates: CandidateGrid,
 ) -> TechniqueResult | None:
-    return find_naked_subset(grid, candidates, 2)
+    """Find the first Locked Pair elimination across its line and box."""
+
+    return _find_locked_naked_subset(
+        grid,
+        candidates,
+        size=2,
+        technique=Technique.LOCKED_PAIR,
+    )
 
 
-def _find_hidden_pair(
+def find_naked_pair(
     grid: Grid,
     candidates: CandidateGrid,
 ) -> TechniqueResult | None:
-    return find_hidden_subset(grid, candidates, 2)
+    """Find the first Naked Pair elimination."""
+
+    return _find_naked_subset(
+        grid,
+        candidates,
+        size=2,
+        technique=Technique.NAKED_PAIR,
+    )
 
 
-def _find_naked_triple(
+def find_locked_triple(
     grid: Grid,
     candidates: CandidateGrid,
 ) -> TechniqueResult | None:
-    return find_naked_subset(grid, candidates, 3)
+    """Find the first Locked Triple elimination across its line and box."""
+
+    return _find_locked_naked_subset(
+        grid,
+        candidates,
+        size=3,
+        technique=Technique.LOCKED_TRIPLE,
+    )
 
 
-def _find_hidden_triple(
+def find_naked_triple(
     grid: Grid,
     candidates: CandidateGrid,
 ) -> TechniqueResult | None:
-    return find_hidden_subset(grid, candidates, 3)
+    """Find the first Naked Triple elimination."""
+
+    return _find_naked_subset(
+        grid,
+        candidates,
+        size=3,
+        technique=Technique.NAKED_TRIPLE,
+    )
+
+
+def find_hidden_pair(
+    grid: Grid,
+    candidates: CandidateGrid,
+) -> TechniqueResult | None:
+    """Find the first Hidden Pair restriction."""
+
+    return _find_hidden_subset(
+        grid,
+        candidates,
+        size=2,
+        technique=Technique.HIDDEN_PAIR,
+    )
+
+
+def find_hidden_triple(
+    grid: Grid,
+    candidates: CandidateGrid,
+) -> TechniqueResult | None:
+    """Find the first Hidden Triple restriction."""
+
+    return _find_hidden_subset(
+        grid,
+        candidates,
+        size=3,
+        technique=Technique.HIDDEN_TRIPLE,
+    )
 
 
 _TECHNIQUE_FINDERS: Final[tuple[_TechniqueFinder, ...]] = (
+    find_full_house,
     find_naked_single,
     find_hidden_single,
-    find_locked_pointing,
-    find_locked_claiming,
-    _find_naked_pair,
-    _find_hidden_pair,
-    _find_naked_triple,
-    _find_hidden_triple,
+    find_locked_pair,
+    find_naked_pair,
+    find_locked_candidates_pointing,
+    find_locked_candidates_claiming,
+    find_locked_triple,
+    find_naked_triple,
+    find_hidden_pair,
+    find_hidden_triple,
 )
 
 

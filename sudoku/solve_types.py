@@ -35,15 +35,18 @@ class StepKind(StrEnum):
 class Technique(StrEnum):
     """Logical deductions currently implemented by the human-style solver."""
 
-    REFUTATION = "refutation"
+    FULL_HOUSE = "full_house"
     NAKED_SINGLE = "naked_single"
     HIDDEN_SINGLE = "hidden_single"
-    LOCKED_POINTING = "locked_pointing"
-    LOCKED_CLAIMING = "locked_claiming"
+    LOCKED_PAIR = "locked_pair"
     NAKED_PAIR = "naked_pair"
-    HIDDEN_PAIR = "hidden_pair"
+    LOCKED_CANDIDATES_POINTING = "locked_candidates_pointing"
+    LOCKED_CANDIDATES_CLAIMING = "locked_candidates_claiming"
+    LOCKED_TRIPLE = "locked_triple"
     NAKED_TRIPLE = "naked_triple"
+    HIDDEN_PAIR = "hidden_pair"
     HIDDEN_TRIPLE = "hidden_triple"
+    REFUTATION = "refutation"
 
 
 @dataclass(frozen=True, slots=True)
