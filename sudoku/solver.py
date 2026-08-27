@@ -8,6 +8,8 @@ from .board import Grid, Puzzle
 from .solve_types import (
     Assignment,
     CandidateGrid,
+    ContradictionKind,
+    ContradictionWitness,
     Elimination,
     SolveResult,
     SolveStatus,
@@ -18,7 +20,7 @@ from .solve_types import (
 )
 from .solver_state import SolverState
 from .techniques import find_next_deduction
-from .topology import CELLS, COLS, DIGITS, ROWS, UNITS, Cell
+from .topology import COLS, ROWS, Cell
 
 _SOLUTION_LIMIT: Final = 2
 type _StateSnapshot = tuple[Grid, CandidateGrid]
@@ -74,7 +76,7 @@ class SudokuSolver:
         search_required = (
             preferred_solution is None
             and not state.is_complete()
-            and not state.has_contradiction()
+            and state.find_contradiction() is None
         )
         if search_required:
             steps.append(
@@ -290,14 +292,16 @@ class SudokuSolver:
         """Apply supported logical deductions to a fixed point or contradiction."""
 
         while True:
-            if state.has_contradiction():
+            contradiction = state.find_contradiction()
+            if contradiction is not None:
                 if steps is not None:
                     steps.append(
                         self._step_from_state(
                             StepKind.CONTRADICTION,
                             state,
                             assumption=assumption,
-                            message=self._contradiction_message(state),
+                            contradiction=contradiction,
+                            message=self._contradiction_message(contradiction),
                         )
                     )
                 return False
@@ -353,49 +357,24 @@ class SudokuSolver:
                 )
 
     @classmethod
-    def _contradiction_message(cls, state: SolverState) -> str:
-        cell = cls._first_exhausted_cell(state)
-        if cell is not None:
+    def _contradiction_message(cls, witness: ContradictionWitness) -> str:
+        if witness.kind is ContradictionKind.EMPTY_CELL and len(witness.cells) == 1:
+            cell = witness.cells[0]
             return (
                 "모순을 발견했습니다. "
                 f"R{cell[0] + 1}C{cell[1] + 1}에 남은 후보가 없습니다."
             )
 
-        missing = cls._first_missing_unit_digit(state)
-        if missing is not None:
-            unit_name, value = missing
+        if (
+            witness.kind is ContradictionKind.MISSING_DIGIT
+            and witness.unit_index is not None
+            and len(witness.digits) == 1
+        ):
+            unit_name = cls._unit_name(witness.unit_index)
+            value = min(witness.digits)
             return f"모순을 발견했습니다. {unit_name}에 숫자 {value}가 들어갈 곳이 없습니다."
 
-        return "모순을 발견했습니다. 같은 숫자가 한 단위에서 충돌합니다."
-
-    @staticmethod
-    def _first_exhausted_cell(state: SolverState) -> Cell | None:
-        return next(
-            (
-                cell
-                for cell in CELLS
-                if state.value_at(cell) == 0 and not state.candidates_at(cell)
-            ),
-            None,
-        )
-
-    @classmethod
-    def _first_missing_unit_digit(
-        cls,
-        state: SolverState,
-    ) -> tuple[str, int] | None:
-        for unit_index, unit in enumerate(UNITS):
-            for value in sorted(DIGITS):
-                if any(
-                    state.value_at(cell) == value
-                    or (
-                        state.value_at(cell) == 0 and value in state.candidates_at(cell)
-                    )
-                    for cell in unit
-                ):
-                    continue
-                return cls._unit_name(unit_index), value
-        return None
+        raise RuntimeError("구조가 잘못된 모순 witness입니다.")
 
     @staticmethod
     def _unit_name(unit_index: int) -> str:
@@ -412,6 +391,7 @@ class SudokuSolver:
         *,
         deduction: TechniqueResult | None = None,
         assumption: Assignment | None = None,
+        contradiction: ContradictionWitness | None = None,
         message: str = "",
     ) -> SolveStep:
         return SolveStep(
@@ -420,5 +400,6 @@ class SudokuSolver:
             candidates=state.candidate_grid(),
             deduction=deduction,
             assumption=assumption,
+            contradiction=contradiction,
             message=message,
         )

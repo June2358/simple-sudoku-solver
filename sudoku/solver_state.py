@@ -3,7 +3,7 @@
 from collections.abc import Iterable
 
 from .board import Grid, Puzzle
-from .solve_types import CandidateGrid
+from .solve_types import CandidateGrid, ContradictionKind, ContradictionWitness
 from .topology import CELLS, DIGITS, PEERS, SIZE, UNITS, Cell
 
 
@@ -121,14 +121,17 @@ class SolverState:
     def empty_cells(self) -> tuple[Cell, ...]:
         return tuple((row, col) for row, col in CELLS if self._values[row][col] == 0)
 
-    def has_contradiction(self) -> bool:
-        if any(
-            self._values[row][col] == 0 and not self._candidates[row][col]
-            for row, col in CELLS
-        ):
-            return True
+    def find_contradiction(self) -> ContradictionWitness | None:
+        """Return the first contradiction in stable, simplest-first order."""
 
-        for unit in UNITS:
+        for row, col in CELLS:
+            if self._values[row][col] == 0 and not self._candidates[row][col]:
+                return ContradictionWitness(
+                    kind=ContradictionKind.EMPTY_CELL,
+                    cells=((row, col),),
+                )
+
+        for unit_index, unit in enumerate(UNITS):
             possible_values: set[int] = set()
             for row, col in unit:
                 value = self._values[row][col]
@@ -136,9 +139,14 @@ class SolverState:
                     possible_values.add(value)
                 else:
                     possible_values.update(self._candidates[row][col])
-            if not possible_values.issuperset(DIGITS):
-                return True
-        return False
+            missing_values = DIGITS - possible_values
+            if missing_values:
+                return ContradictionWitness(
+                    kind=ContradictionKind.MISSING_DIGIT,
+                    unit_index=unit_index,
+                    digits=frozenset({min(missing_values)}),
+                )
+        return None
 
     def is_complete(self) -> bool:
-        return not self.empty_cells() and not self.has_contradiction()
+        return not self.empty_cells() and self.find_contradiction() is None

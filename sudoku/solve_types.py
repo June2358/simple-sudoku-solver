@@ -49,6 +49,13 @@ class Technique(StrEnum):
     REFUTATION = "refutation"
 
 
+class ContradictionKind(StrEnum):
+    """Structured contradiction categories emitted by the solver state."""
+
+    EMPTY_CELL = "empty_cell"
+    MISSING_DIGIT = "missing_digit"
+
+
 @dataclass(frozen=True, slots=True)
 class Assignment:
     """One value placed in one cell."""
@@ -86,6 +93,16 @@ class TechniqueResult:
 
 
 @dataclass(frozen=True, slots=True)
+class ContradictionWitness:
+    """The stable cells, house, and digits that prove one contradiction."""
+
+    kind: ContradictionKind
+    cells: tuple[Cell, ...] = ()
+    unit_index: int | None = None
+    digits: frozenset[int] = frozenset()
+
+
+@dataclass(frozen=True, slots=True)
 class SolveStep:
     """One immutable trace item containing exactly one state snapshot."""
 
@@ -94,6 +111,7 @@ class SolveStep:
     candidates: CandidateGrid
     deduction: TechniqueResult | None = None
     assumption: Assignment | None = None
+    contradiction: ContradictionWitness | None = None
     message: str = ""
 
     @property

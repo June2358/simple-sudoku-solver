@@ -14,7 +14,7 @@ from .solve_types import (
     Technique,
     TechniqueResult,
 )
-from .topology import SIZE, Cell
+from .topology import SIZE, UNITS, Cell
 from .ui_components import Button
 from .ui_style import (
     ACCENT,
@@ -252,15 +252,26 @@ class SudokuVisualizer:
             {item.cell for item in deduction.eliminations} if deduction else set()
         )
         assigned = {item.cell for item in deduction.assignments} if deduction else set()
+        contradiction = step.contradiction
+        contradiction_context = (
+            set(UNITS[contradiction.unit_index])
+            if contradiction is not None and contradiction.unit_index is not None
+            else set()
+        )
+        contradiction_cells = set(contradiction.cells if contradiction else ())
 
         for cell in context:
             self._fill_cell(cell, (*PRIMARY_LIGHT, 42))
+        for cell in contradiction_context:
+            self._fill_cell(cell, (*RED, 35))
         for cell in evidence:
             self._fill_cell(cell, (*ACCENT_YELLOW, 70))
         for cell in eliminated:
             self._fill_cell(cell, (*RED, 65))
         for cell in assigned:
             self._fill_cell(cell, (*ACCENT, 70))
+        for cell in contradiction_cells:
+            self._fill_cell(cell, (*RED, 80))
 
         if step.assumption is not None:
             decision_color = RED if step.kind is StepKind.REFUTATION else ORANGE

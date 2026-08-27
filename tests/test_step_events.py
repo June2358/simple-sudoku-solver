@@ -15,8 +15,13 @@ ALL_BRANCHES_STALL = (
 def test_refutation_removes_the_proven_candidate() -> None:
     result = SudokuSolver(Puzzle(grid_from_string(REFUTATION_THEN_SOLUTION))).solve()
     refutation = next(step for step in result.steps if step.kind is StepKind.REFUTATION)
+    contradictions = tuple(
+        step for step in result.steps if step.kind is StepKind.CONTRADICTION
+    )
 
     assert result.status is SolveStatus.SOLVED_UNIQUE
+    assert contradictions
+    assert all(step.contradiction is not None for step in contradictions)
     assert refutation.assumption is not None
     row, col = refutation.assumption.cell
     assert refutation.assumption.value not in refutation.candidates[row][col]
